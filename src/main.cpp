@@ -59,7 +59,7 @@ bool displayActivity() {
     return waking;
 }
 
-struct Action { int index; bool on; }; // -1 refresh, -2 all
+struct Action { int index; bool on; }; // -1 refresh
 
 void status(const String& text, bool working) {
     xSemaphoreTake(stateLock, portMAX_DELAY);
@@ -166,7 +166,7 @@ void provision(const String& line) {
         xSemaphoreTake(stateLock, portMAX_DELAY);
         json["channels"] = viewItems.size();
         json["view"] = viewLabels[static_cast<uint8_t>(view)]; json["favorites"] = favorites.size(); json["status"] = notice;
-        json["ui_version"] = 7; json["font2_loaded"] = true;
+        json["ui_version"] = 8; json["font2_loaded"] = true;
         json["devices_per_page"] = UI::devicesPerPage;
         json["page"] = page+1; json["pages"] = UI::pageCount(viewItems.size());
         json["auto_refresh_seconds"] = UI::refreshIntervalMs / 1000;
@@ -242,7 +242,7 @@ void worker(void*) {
                 catalogLive = true;
                 discoveredCount = total;
                 xSemaphoreGive(stateLock);
-                status("Auto refresh every 60s", false);
+                status("", false);
             } else {
                 xSemaphoreTake(stateLock, portMAX_DELAY);
                 catalogLive = false;
@@ -253,52 +253,32 @@ void worker(void*) {
             continue;
         }
         status("Sending command...", true);
-        int sent = 0, failed = 0, skipped = 0, unconfirmed = 0;
-        String lastError;
+        const size_t index = action.index;
         xSemaphoreTake(stateLock, portMAX_DELAY);
-        std::vector<size_t> targets;
-        if (action.index >= 0) targets.push_back(action.index);
-        else targets = viewItems;
+        PowerItem item = items[index];
+        items[index].sent = true;
+        dirty = true;
         xSemaphoreGive(stateLock);
-        for (size_t i : targets) {
-            xSemaphoreTake(stateLock, portMAX_DELAY);
-            PowerItem item = items[i];
-            xSemaphoreGive(stateLock);
-            if (!item.online || !item.controllable()) { ++skipped; continue; }
-            xSemaphoreTake(stateLock, portMAX_DELAY);
-            items[i].sent = true; dirty = true;
-            xSemaphoreGive(stateLock);
-            if (ha.command(item, action.on)) {
-                ++sent;
-                // Confirm the state reported by Home Assistant after the command.
-                bool confirmed = false;
-                for (int attempt = 0; attempt < 3; ++attempt) {
-                    vTaskDelay(pdMS_TO_TICKS(600));
-                    if (ha.refreshState(item) && item.known && item.online && item.on == action.on) {
-                        confirmed = true; break;
-                    }
+
+        const bool accepted = ha.command(item, action.on);
+        bool confirmed = false;
+        if (accepted) {
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                vTaskDelay(pdMS_TO_TICKS(600));
+                if (ha.refreshState(item) && item.known && item.online && item.on == action.on) {
+                    confirmed = true;
+                    break;
                 }
-                if (!confirmed) { ++unconfirmed; item.known = false; }
-                item.sent = false;
-                xSemaphoreTake(stateLock, portMAX_DELAY);
-                items[i] = item; dirty = true;
-                xSemaphoreGive(stateLock);
-            } else {
-                ++failed; lastError = ha.error;
-                xSemaphoreTake(stateLock, portMAX_DELAY);
-                items[i].sent = false; dirty = true;
-                items[i].known = false;
-                xSemaphoreGive(stateLock);
             }
-            vTaskDelay(pdMS_TO_TICKS(120));
         }
-        String result;
-        if (unconfirmed) result = String(unconfirmed) + " unconfirmed - tap Refresh";
-        else if (failed) result = String(failed) + " failed - tap Refresh";
-        else if (action.index >= 0 && sent) result = action.on ? "Device is ON" : "Device is OFF";
-        else result = String(sent) + " changed / " + skipped + " skipped";
-        status(result, false);
-        if (failed) { Serial.println(lastError); }
+        item.sent = false;
+        if (!confirmed) item.known = false;
+        xSemaphoreTake(stateLock, portMAX_DELAY);
+        items[index] = item;
+        dirty = true;
+        xSemaphoreGive(stateLock);
+        if (!accepted) status(ha.error, false);
+        else status(confirmed ? "" : "Unconfirmed - tap Refresh", false);
     }
 }
 
@@ -311,11 +291,12 @@ void label(const String& value, int x, int y, int font, uint16_t color) {
     canvas.setTextDatum(TL_DATUM); canvas.setTextColor(color, BG);
     canvas.drawString(value, x, y, font);
 }
-void button(int id, const char* text, int x, int y, int w, int h, uint16_t color, bool enabled = true) {
+void button(int id, const char* text, UI::Rect rect, uint16_t color, bool enabled = true) {
+    const int x = rect.x, y = rect.y, w = rect.w, h = rect.h;
     canvas.fillRoundRect(x, y, w, h, 8, enabled ? color : CARD);
     if (!touchAvailable && id == UI::focusedControl(focus, viewItems.size(), page)) canvas.drawRoundRect(x, y, w, h, 8, TFT_WHITE);
     canvas.setTextDatum(MC_DATUM); canvas.setTextColor(enabled ? TFT_WHITE : MUTED);
-    canvas.drawString(text, x + w/2, y + h/2, id == UI::changeView ? 1 : 2);
+    canvas.drawString(text, x + w/2, y + h/2, (id == UI::changeView || id == UI::refresh) ? 1 : 2);
 }
 
 void deviceName(const String& name, UI::Rect rect, uint16_t foreground, uint16_t background) {
@@ -359,40 +340,33 @@ void draw() {
     scrollingNames = false;
     canvas.fillSprite(BG);
     const time_t now = time(nullptr);
-    const bool synced = now >= 1700000000;
-    tm local; localtime_r(&now, &local);
-    char clockText[12] = "--:--", secondsText[4] = ":--", dateText[40] = "Waiting for NTP";
-    char zoneText[12] = "Toronto";
-    if (synced) {
+    char clockText[12] = "--:--";
+    char secondsText[4] = "";
+    if (now >= 1700000000) {
+        tm local;
+        localtime_r(&now, &local);
         strftime(clockText, sizeof(clockText), "%H:%M", &local);
         strftime(secondsText, sizeof(secondsText), ":%S", &local);
-        strftime(dateText, sizeof(dateText), "%d %b %Y", &local);
-        strftime(zoneText, sizeof(zoneText), "%Z", &local);
     }
-    canvas.setTextDatum(TL_DATUM); canvas.setTextColor(TFT_WHITE, BG);
-    canvas.setTextSize(2); canvas.drawString(clockText, 8, 0, 4); canvas.setTextSize(1);
-    canvas.drawString(secondsText, 140, 30, 2);
-    label(dateText, 8, 52, synced ? 4 : 2, TFT_WHITE);
-    canvas.setTextDatum(TR_DATUM); canvas.setTextColor(MUTED, BG);
-    button(UI::changeView, viewLabels[static_cast<uint8_t>(view)], 166, 3, 66, 20, 0x2250);
-    canvas.setTextDatum(TR_DATUM); canvas.setTextColor(MUTED, BG);
-    canvas.drawString(zoneText, 230, 69, 1);
+    label(clockText, 8, 2, 4, TFT_WHITE);
+    label(secondsText, 12 + canvas.textWidth(clockText, 4), 16, 1, MUTED);
+    button(UI::changeView, viewLabels[static_cast<uint8_t>(view)], UI::viewButton, 0x2250);
+    button(UI::refresh, busy ? "WAIT" : "REFRESH", UI::refreshButton, 0x2250, !busy);
+
     page = UI::clampPage(page, viewItems.size());
     const int pages = UI::pageCount(viewItems.size());
-    const int visible = UI::visibleCount(viewItems.size(),page);
+    const int visible = UI::visibleCount(viewItems.size(), page);
     if (pages > 1) {
-        button(UI::previous, "<", 166, 28, 28, 28, CARD, page > 0);
-        button(UI::next, ">", 204, 28, 28, 28, CARD, page+1 < pages);
+        button(UI::previous, "<", UI::previousButton, CARD, page > 0);
+        button(UI::next, ">", UI::nextButton, CARD, page+1 < pages);
         canvas.setTextDatum(MC_DATUM); canvas.setTextColor(MUTED, BG);
-        canvas.drawString(String(page+1) + "/" + pages, 199, 65, 1);
-    } else {
-        canvas.setTextDatum(TR_DATUM); canvas.setTextColor(MUTED, BG);
-        canvas.drawString(String(viewItems.size()), 230, 38, 2);
+        canvas.drawString(String(page+1) + "/" + pages, 120, 301, 1);
     }
-    label(shortText(demo ? "DEMO - configure via USB" : notice, 36), 8, 80, 1, TFT_CYAN);
+    const String headerStatus = demo ? "DEMO - configure via USB" : busy ? "" : notice;
+    if (!headerStatus.isEmpty()) label(shortText(headerStatus, 36), 8, 29, 1, TFT_CYAN);
     for (int slot = 0; slot < visible; ++slot) {
         size_t index = page*UI::devicesPerPage + slot;
-        UI::Rect rect = UI::tile(slot, visible);
+        UI::Rect rect = UI::tile(slot, viewItems.size(), page);
         const auto& item = items[viewItems[index]];
         const bool online = item.online && (catalogLive || demo);
         const bool pending = item.controllable() && (item.sent || !item.known);
@@ -424,13 +398,6 @@ void draw() {
             label("Hold a tile in All or Controls", 20, 140, 2, MUTED);
         } else label(view == View::Controls ? "No controls found" : "No devices loaded", 20, 110, 2, MUTED);
     }
-    const bool canControl = !busy && (catalogLive || demo) &&
-        std::any_of(viewItems.begin(), viewItems.end(), [](size_t index) {
-            return items[index].online && items[index].controllable();
-        });
-    button(UI::allOn, "ALL ON", 8, 284, 70, 32, GREEN, canControl);
-    button(UI::allOff, "ALL OFF", 85, 284, 70, 32, TFT_BLACK, canControl);
-    button(UI::refresh, busy ? "WAIT" : "REFRESH", 162, 284, 70, 32, 0x2250, !busy);
     canvas.pushSprite(0, 0);
     layoutDrawn = true;
     xSemaphoreGive(stateLock);
@@ -490,24 +457,17 @@ void activate(int id, bool hold = false) {
         if ((!catalogLive && !demo) || !item.online || !item.controllable()) return;
         if (!item.known) action.index = -1;
         else action.on = !item.on;
-    } else if (id == UI::allOn || id == UI::allOff) {
-        if (hold || (!catalogLive && !demo)) return;
-        action.index = -2;
-        action.on = id == UI::allOn;
     } else if (id != UI::refresh) return;
 
     if (demo) {
-        if (action.index != -1) {
-            for (size_t i : viewItems) {
-                if (action.index == -2 || action.index == static_cast<int>(i)) {
-                    items[i].on = action.on;
-                    items[i].state = action.on ? "on" : "off";
-                }
-            }
+        if (action.index >= 0) {
+            auto& item = items[action.index];
+            item.on = action.on;
+            item.state = action.on ? "on" : "off";
         }
         dirty = true;
     } else if (xQueueSend(actions, &action, 0) == pdTRUE) {
-        busy = true; notice = "Updating device..."; dirty = true;
+        busy = true; dirty = true;
     }
 }
 

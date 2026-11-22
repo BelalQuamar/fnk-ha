@@ -2,7 +2,7 @@
 
 namespace UI {
 constexpr int devicesPerPage = 9;
-constexpr int gridTop = 94, gridHeight = 182;
+constexpr int gridTop = 38;
 constexpr unsigned long refreshIntervalMs = 60000;
 inline bool discoveryDue(unsigned long now, unsigned long last) {
     return (unsigned long)(now-last) >= refreshIntervalMs;
@@ -15,51 +15,49 @@ inline int visibleCount(int count, int page = 0) {
     int remaining = count - page*devicesPerPage;
     return remaining > 9 ? 9 : remaining < 0 ? 0 : remaining;
 }
-constexpr int allOn = -2, allOff = -3, refresh = -4, previous = -5, next = -6, changeView = -7;
+constexpr int refresh = -4, previous = -5, next = -6, changeView = -7;
 struct Rect {
     int x, y, w, h;
     bool contains(int px, int py) const { return px >= x && px < x+w && py >= y && py < y+h; }
 };
-inline Rect tile(int index, int count) {
-    count = visibleCount(count);
-    int columns = count <= 3 ? 1 : count <= 6 ? 2 : 3;
-    // Four/five controls reserve the same two-column, three-row grid as six.
-    int rows = count <= 3 ? count : 3;
-    if (rows < 1) rows = 1;
-    int gap = 6;
-    int cellW = (224 - (columns-1)*gap) / columns;
-    int cellH = (gridHeight - (rows-1)*gap) / rows;
-    return {8 + (index % columns)*(cellW+gap), gridTop + (index/columns)*(cellH+gap), cellW, cellH};
+constexpr Rect viewButton{107, 4, 65, 24};
+constexpr Rect refreshButton{180, 4, 52, 24};
+constexpr Rect previousButton{52, 289, 40, 25};
+constexpr Rect nextButton{148, 289, 40, 25};
+inline int gridBottom(int count) { return pageCount(count) > 1 ? 283 : 312; }
+
+inline Rect tile(int index, int count, int page = 0) {
+    const int visible = visibleCount(count, page);
+    const int columns = visible <= 3 ? 1 : visible <= 6 ? 2 : 3;
+    const int rows = visible > 0 ? (visible + columns - 1) / columns : 1;
+    const int gap = 6;
+    const int width = (224 - (columns-1)*gap) / columns;
+    const int height = (gridBottom(count) - gridTop - (rows-1)*gap) / rows;
+    return {8 + (index % columns)*(width+gap), gridTop + (index/columns)*(height+gap), width, height};
 }
 inline int hit(int x, int y, int count, int page = 0) {
-    page = clampPage(page,count);
-    if (x >= 166 && x < 232 && y >= 3 && y < 23) return changeView;
-    if (pageCount(count) > 1 && y >= 28 && y < 56) {
-        if (x >= 166 && x < 194) return previous;
-        if (x >= 204 && x < 232) return next;
+    page = clampPage(page, count);
+    if (viewButton.contains(x, y)) return changeView;
+    if (refreshButton.contains(x, y)) return refresh;
+    if (pageCount(count) > 1) {
+        if (previousButton.contains(x, y)) return previous;
+        if (nextButton.contains(x, y)) return next;
     }
-    int visible = visibleCount(count,page);
+    const int visible = visibleCount(count, page);
     for (int i = 0; i < visible; ++i)
-        if (tile(i,visible).contains(x,y)) return page*devicesPerPage+i;
-    if (y >= 284 && y < 316) {
-        if (x >= 8 && x < 78) return allOn;
-        if (x >= 85 && x < 155) return allOff;
-        if (x >= 162 && x < 232) return refresh;
-    }
+        if (tile(i, count, page).contains(x, y)) return page*devicesPerPage+i;
     return -1;
 }
 inline int focusCount(int count, int page) {
-    return visibleCount(count,page) + (pageCount(count)>1 ? 6 : 4);
+    return visibleCount(count, page) + (pageCount(count) > 1 ? 4 : 2);
 }
 inline int focusedControl(int focus, int count, int page = 0) {
-    int visible = visibleCount(count,page);
+    const int visible = visibleCount(count, page);
     if (focus < visible) return page*devicesPerPage+focus;
-    if (focus == focusCount(count, page) - 1) return changeView;
     switch (focus-visible) {
-        case 0: return allOn;
-        case 1: return allOff;
-        case 2: return refresh;
-        case 3: return previous;
+        case 0: return changeView;
+        case 1: return refresh;
+        case 2: return previous;
         default: return next;
     }
 }

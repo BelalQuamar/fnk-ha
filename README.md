@@ -4,7 +4,11 @@ FNK_HA is a Home Assistant controller for the **Freenove FNK0104B 2.8-inch ESP32
 
 [![Firmware CI and release](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml/badge.svg)](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml)
 
-![Controls view captured from the Freenove display, showing six Home Assistant entities with their names and states](docs/device-screen.png)
+![All view captured from the Freenove display, showing the compact header, nine entity tiles, and bottom page navigation](docs/device-screen.png)
+
+The close-up below shows a long name scrolling on an actual entity tile.
+
+![USB framebuffer captures of a long name scrolling inside its tile](docs/scrolling-name.gif)
 
 ## Install the firmware
 
@@ -48,7 +52,7 @@ For an app-only update, use `write_flash 0x10000 fnk-ha-dev-app.bin` in the same
 
 ## Use the display
 
-Tap the view button in the top-right corner to cycle through **Controls**, **All**, and **Favorites**.
+The compact header shows the time, view selector, and small **Refresh** button. Tap the view selector next to **Refresh** to cycle through **Controls**, **All**, and **Favorites**. Single-page views use the area below the header for larger tiles.
 
 | Control | What it does |
 | --- | --- |
@@ -56,11 +60,10 @@ Tap the view button in the top-right corner to cycle through **Controls**, **All
 | **Controls** | The default view. Shows lights, switches, fans, humidifiers, and input booleans. |
 | **All** | Shows all entities Home Assistant reports, including sensors. |
 | **Favorites** | Shows the tiles you selected in your saved order. |
-| **<** and **>** | Move between pages. Each page fits up to nine tiles. |
-| **ALL ON** and **ALL OFF** | Send the corresponding command to supported, available entities across every page of the selected view. |
-| **REFRESH** | Reloads the list and reported states immediately. |
+| **<** and **>** | Move between pages using the bottom bar. The bar appears only when the view needs more than one page. |
+| **REFRESH** | Tap the small top-right button to reload the list and reported states immediately. |
 
-**All** shows every entity Home Assistant reports, sorted by friendly name. Names use smaller text on narrow tiles and scroll when they still exceed two lines. A device with a switch and a power sensor appears on two tiles. The display refreshes every 60 seconds, picking up new, renamed, and removed entities.
+Tiles use the Home Assistant friendly name. A device with a switch and a power sensor appears on two tiles. Longer names wrap or scroll within their tiles. The grid refreshes in the background every 60 seconds and picks up new, renamed, and removed entities.
 
 ### Pin and reorder favorites
 
