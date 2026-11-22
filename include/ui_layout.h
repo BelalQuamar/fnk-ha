@@ -1,19 +1,19 @@
 #pragma once
 
 namespace UI {
-constexpr int devicesPerPage = 9;
+constexpr int devicesPerPage = 6;
 constexpr int gridTop = 38;
 constexpr unsigned long refreshIntervalMs = 60000;
 inline bool discoveryDue(unsigned long now, unsigned long last) {
     return (unsigned long)(now-last) >= refreshIntervalMs;
 }
-inline int pageCount(int count) { return count > 0 ? (count+8)/9 : 1; }
+inline int pageCount(int count) { return count > 0 ? (count - 1)/devicesPerPage + 1 : 1; }
 inline int clampPage(int page, int count) {
     return page < 0 ? 0 : page >= pageCount(count) ? pageCount(count)-1 : page;
 }
 inline int visibleCount(int count, int page = 0) {
     int remaining = count - page*devicesPerPage;
-    return remaining > 9 ? 9 : remaining < 0 ? 0 : remaining;
+    return remaining > devicesPerPage ? devicesPerPage : remaining < 0 ? 0 : remaining;
 }
 constexpr int refresh = -4, previous = -5, next = -6, changeView = -7;
 struct Rect {
@@ -28,12 +28,14 @@ inline int gridBottom(int count) { return pageCount(count) > 1 ? 283 : 312; }
 
 inline Rect tile(int index, int count, int page = 0) {
     const int visible = visibleCount(count, page);
-    const int columns = visible <= 3 ? 1 : visible <= 6 ? 2 : 3;
+    const int columns = visible <= 3 ? 1 : 2;
     const int rows = visible > 0 ? (visible + columns - 1) / columns : 1;
-    const int gap = 6;
-    const int width = (224 - (columns-1)*gap) / columns;
+    const int gap = 5, margin = 5, gridWidth = 240 - 2*margin;
+    const bool wideLastTile = columns == 2 && visible % 2 && index == visible - 1;
+    const int width = (gridWidth - (columns-1)*gap) / columns;
     const int height = (gridBottom(count) - gridTop - (rows-1)*gap) / rows;
-    return {8 + (index % columns)*(width+gap), gridTop + (index/columns)*(height+gap), width, height};
+    return {margin + (index % columns)*(width+gap), gridTop + (index/columns)*(height+gap),
+            wideLastTile ? gridWidth : width, height};
 }
 inline int hit(int x, int y, int count, int page = 0) {
     page = clampPage(page, count);

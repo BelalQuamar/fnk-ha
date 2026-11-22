@@ -32,7 +32,7 @@ int page = 0;
 unsigned renderCount = 0;
 unsigned discoveredCount = 0;
 bool catalogLive = false, layoutDrawn = false;
-const uint16_t BG = 0x2108, CARD = 0x4208, MUTED = 0x9CF3, GREEN = 0x052C;
+const uint16_t BG = 0x2108, CARD = 0x4208, MUTED = 0x9CF3;
 DisplayIdle displayIdle;
 constexpr size_t setupLineLimit = 3500;
 void draw();
@@ -166,7 +166,7 @@ void provision(const String& line) {
         xSemaphoreTake(stateLock, portMAX_DELAY);
         json["channels"] = viewItems.size();
         json["view"] = viewLabels[static_cast<uint8_t>(view)]; json["favorites"] = favorites.size(); json["status"] = notice;
-        json["ui_version"] = 8; json["font2_loaded"] = true;
+        json["ui_version"] = 9; json["font2_loaded"] = true;
         json["devices_per_page"] = UI::devicesPerPage;
         json["page"] = page+1; json["pages"] = UI::pageCount(viewItems.size());
         json["auto_refresh_seconds"] = UI::refreshIntervalMs / 1000;
@@ -299,38 +299,74 @@ void button(int id, const char* text, UI::Rect rect, uint16_t color, bool enable
     canvas.drawString(text, x + w/2, y + h/2, (id == UI::changeView || id == UI::refresh) ? 1 : 2);
 }
 
-void deviceName(const String& name, UI::Rect rect, uint16_t foreground, uint16_t background) {
-    const int width = rect.w - 12;
-    const int cx = rect.x + rect.w / 2;
-    const int cy = rect.y + (rect.h - 16) / 2;
-    canvas.setTextDatum(MC_DATUM);
-    canvas.setTextColor(foreground, background);
-
-    const int font = rect.w >= 100 && canvas.textWidth(name, 2) <= width ? 2 : 1;
+void deviceName(const String& name, UI::Rect area, uint16_t background) {
+    const int center = area.y + area.h / 2;
+    const int font = area.w >= 190 && canvas.textWidth(name, 4) <= area.w ? 4 : 2;
     const int nameWidth = canvas.textWidth(name, font);
-    if (nameWidth <= width) {
-        canvas.drawString(name, cx, cy, font);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.setTextColor(TFT_WHITE, background);
+    if (nameWidth <= area.w) {
+        canvas.drawString(name, area.x, center, font);
         return;
     }
+    const int lineHeight = canvas.fontHeight(font);
     for (int split = name.indexOf(' '); split > 0; split = name.indexOf(' ', split + 1)) {
         const String first = name.substring(0, split);
-        if (canvas.textWidth(first, 1) > width) break;
+        if (canvas.textWidth(first, font) > area.w) break;
         const String second = name.substring(split + 1);
-        if (canvas.textWidth(second, 1) > width) continue;
-        canvas.drawString(first, cx, cy - 5, 1);
-        canvas.drawString(second, cx, cy + 5, 1);
+        if (canvas.textWidth(second, font) > area.w) continue;
+        canvas.drawString(first, area.x, center - lineHeight / 2, font);
+        canvas.drawString(second, area.x, center + lineHeight / 2, font);
         return;
     }
 
     scrollingNames = true;
     const unsigned long elapsed = millis() - scrollStarted;
-    const int period = nameWidth + 24;
+    const int period = nameWidth + 28;
     const int offset = ((elapsed < 800 ? 0 : elapsed - 800) / 35) % period;
-    canvas.setViewport(rect.x + 6, cy - 4, width, 8);
+    canvas.setViewport(area.x, center - lineHeight / 2, area.w, lineHeight);
     canvas.setTextDatum(TL_DATUM);
-    canvas.drawString(name, -offset, 0, 1);
-    canvas.drawString(name, period - offset, 0, 1);
+    canvas.drawString(name, -offset, 0, font);
+    canvas.drawString(name, period - offset, 0, font);
     canvas.resetViewport();
+}
+
+void deviceTile(const PowerItem& item, UI::Rect rect, bool focused) {
+    constexpr uint16_t tileBackground = 0x1908, border = 0x528C;
+    const bool online = item.online && (catalogLive || demo);
+    const int radius = 9;
+    canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, radius, tileBackground);
+    canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, radius, focused ? TFT_WHITE : border);
+
+    if (std::find(favorites.begin(), favorites.end(), item.id) != favorites.end())
+        canvas.fillCircle(rect.x + rect.w - 9, rect.y + 8, 2, TFT_YELLOW);
+
+    const int badgeX = rect.x + 9, badgeY = rect.y + rect.h - 27;
+    deviceName(item.name, {badgeX, rect.y + 5, rect.w - 18, badgeY - rect.y - 8}, tileBackground);
+
+    String state = item.state;
+    uint16_t background = 0x2251, foreground = 0xD71F;
+    if (!online) {
+        state = "Offline"; background = 0x4208; foreground = 0xDEFB;
+    } else if (item.sent || (item.controllable() && !item.known)) {
+        state = item.sent ? "Updating" : "Unknown";
+        background = 0xFCE7; foreground = TFT_BLACK;
+    } else if (item.known) {
+        state = item.on ? "On" : "Off";
+        background = item.on ? 0x036A : 0x39E9;
+        foreground = item.on ? 0xDFFA : 0xDEFB;
+    }
+
+    const int maxWidth = rect.w - 36;
+    if (canvas.textWidth(state, 2) > maxWidth) {
+        while (!state.isEmpty() && canvas.textWidth(state + "..", 2) > maxWidth)
+            state.remove(state.length() - 1);
+        state += "..";
+    }
+    canvas.fillRoundRect(badgeX, badgeY, canvas.textWidth(state, 2) + 18, 20, 7, background);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.setTextColor(foreground);
+    canvas.drawString(state, badgeX + 9, badgeY + 10, 2);
 }
 
 void draw() {
@@ -367,29 +403,9 @@ void draw() {
     for (int slot = 0; slot < visible; ++slot) {
         size_t index = page*UI::devicesPerPage + slot;
         UI::Rect rect = UI::tile(slot, viewItems.size(), page);
-        const auto& item = items[viewItems[index]];
-        const bool online = item.online && (catalogLive || demo);
-        const bool pending = item.controllable() && (item.sent || !item.known);
-        uint16_t fill = !online ? 0x632C : pending ? 0xFBC0 :
-                        item.known && item.on ? GREEN : item.known ? TFT_BLACK : CARD;
-        uint16_t ink = online && pending ? 0x18C3 : TFT_WHITE;
-        int radius = min(12, min(rect.h/3, rect.w/3));
-        canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, radius, fill);
-        canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, radius,
-            !touchAvailable && (int)index == UI::focusedControl(focus, viewItems.size(), page) ? TFT_WHITE : item.on && item.known ? 0x4F77 : 0x528A);
-        if (std::find(favorites.begin(), favorites.end(), item.id) != favorites.end())
-            canvas.fillCircle(rect.x + 9, rect.y + 8, 2, TFT_YELLOW);
-        deviceName(item.name, rect, ink, fill);
-        String state = !online ? "OFFLINE" : item.sent ? "UPDATING" :
-            item.controllable() && !item.known ? "UNKNOWN" :
-            item.known ? (item.on ? "ON" : "OFF") : item.state;
-        const int width = rect.w - 12;
-        if (canvas.textWidth(state, 1) > width) {
-            while (!state.isEmpty() && canvas.textWidth(state + "..", 1) > width) state.remove(state.length() - 1);
-            state += "..";
-        }
-        canvas.setTextDatum(MC_DATUM); canvas.setTextColor(ink, fill);
-        if (rect.h >= 35) canvas.drawString(state, rect.x + rect.w/2, rect.y + rect.h - 12, 1);
+        const bool focused = !touchAvailable &&
+            static_cast<int>(index) == UI::focusedControl(focus, viewItems.size(), page);
+        deviceTile(items[viewItems[index]], rect, focused);
     }
     if (viewItems.empty()) {
         if (busy) label("Loading devices...", 20, 110, 2, MUTED);

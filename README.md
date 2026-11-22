@@ -1,10 +1,10 @@
 # FNK_HA
 
-FNK_HA is a Home Assistant controller for the **Freenove FNK0104B 2.8-inch ESP32-S3 touch display**. It connects directly to Home Assistant over local Wi-Fi. The adaptive grid displays up to nine entities per page and refreshes automatically every 60 seconds.
+FNK_HA is a Home Assistant controller for the **Freenove FNK0104B 2.8-inch ESP32-S3 touch display**. It connects directly to Home Assistant over local Wi-Fi. The adaptive grid displays up to six entities per page and refreshes automatically every 60 seconds.
 
 [![Firmware CI and release](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml/badge.svg)](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml)
 
-![All view captured from the Freenove display, showing the compact header, nine entity tiles, and bottom page navigation](docs/device-screen.png)
+![All view captured from the Freenove display, showing the compact header, six entity tiles, and bottom page navigation](docs/device-screen.png)
 
 The close-up below shows a long name scrolling on an actual entity tile.
 
@@ -14,9 +14,9 @@ The close-up below shows a long name scrolling on an actual entity tile.
 
 These binaries are for the **Freenove FNK0104B 2.8-inch ILI9341 display with a 16 MB ESP32-S3**. Connect it to your computer with a USB data cable and close any open serial monitor.
 
-### Latest firmware from main
+### Build from source
 
-Build and upload from a clone of this repository to get the **Controls**, **All**, and **Favorites** views and scrolling names. In an activated Python virtual environment, run:
+To build and upload from a clone of this repository, run these commands in an activated Python virtual environment:
 
     python -m pip install -r requirements-dev.txt
     pio run -t upload --upload-port YOUR_USB_PORT
@@ -25,19 +25,19 @@ Alternatively, open a successful [Firmware Actions run on main](https://github.c
 
 ### Flash a prebuilt binary
 
-The [v0.1 release](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.1) contains the original all-entity grid. The Actions artifact and the release both include flashing instructions and checksums. On macOS or Linux, run `shasum -a 256 -c SHA256SUMS.txt` from the directory containing the binaries.
+Download the firmware, flashing instructions, and checksums from [v0.2 on GitHub](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.2). On macOS or Linux, run `shasum -a 256 -c SHA256SUMS.txt` from the directory containing the binaries.
 
 | Use | Binary suffix | Flash address |
 | --- | --- | --- |
 | First installation | `-merged.bin` | `0x0` |
 | Update an existing FNK_HA installation | `-app.bin` | `0x10000` |
 
-The merged image replaces the existing firmware and clears saved settings. The app image requires the FNK_HA partition layout and preserves saved configuration. For example, to flash the merged binary from the latest Actions artifact, run:
+The merged image replaces the existing firmware and clears saved settings. The app image requires the FNK_HA partition layout and preserves saved configuration. To flash the v0.2 merged binary, run:
 
     python -m pip install esptool==4.9.0
-    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-dev-merged.bin
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.2-merged.bin
 
-For an app-only update, use `write_flash 0x10000 fnk-ha-dev-app.bin` in the same command. USB ports typically look like `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
+For an app-only update, use `write_flash 0x10000 fnk-ha-v0.2-app.bin` in the same command. USB ports typically look like `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
 
 ## Connect to Home Assistant
 
@@ -63,7 +63,7 @@ The compact header shows the time, view selector, and small **Refresh** button. 
 | **<** and **>** | Move between pages using the bottom bar. The bar appears only when the view needs more than one page. |
 | **REFRESH** | Tap the small top-right button to reload the list and reported states immediately. |
 
-Tiles use the Home Assistant friendly name. A device with a switch and a power sensor appears on two tiles. Longer names wrap or scroll within their tiles. The grid refreshes in the background every 60 seconds and picks up new, renamed, and removed entities.
+Tiles use the Home Assistant friendly name. A device with a switch and a power sensor appears on two tiles. Tiles use large, high-contrast names and a separate color-coded status badge. Longer names wrap or scroll at the same text size. The grid refreshes in the background every 60 seconds and picks up new, renamed, and removed entities.
 
 ### Pin and reorder favorites
 
