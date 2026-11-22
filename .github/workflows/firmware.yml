@@ -1,0 +1,85 @@
+name: Firmware CI and release
+
+'on':
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Test, build and package ESP32-S3 firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install host tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test in ui_layout display_idle local_clock; do
+            c++ -std=c++11 -Iinclude "tests/${test}_test.cpp" -o "${RUNNER_TEMP}/${test}_test"
+            "${RUNNER_TEMP}/${test}_test"
+          done
+      - name: Check Python syntax
+        run: python -m compileall -q tools tests
+      - name: Build firmware
+        run: pio run
+      - name: Package merged and application binaries
+        run: python tools/package_release.py --version "$RELEASE_VERSION"
+      - name: Verify flash layout and checksums
+        run: python tests/release_package_test.py --directory "dist/$RELEASE_VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fnk-ha-${{ env.RELEASE_VERSION }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish tagged firmware release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fnk-ha-${{ github.ref_name }}
+          path: dist
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="dist/$RELEASE_TAG"
+          (cd "$release_dir" && sha256sum -c SHA256SUMS.txt)
+          assets=("$release_dir"/*.bin "$release_dir"/INSTALL.md "$release_dir"/manifest.json "$release_dir"/RELEASE_NOTES.md "$release_dir"/SHA256SUMS.txt)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            gh release edit "$RELEASE_TAG" --title "fnk-ha $RELEASE_TAG" --notes-file "$release_dir/RELEASE_NOTES.md"
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --title "fnk-ha $RELEASE_TAG" --notes-file "$release_dir/RELEASE_NOTES.md"
+          fi

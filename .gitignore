@@ -1,0 +1,34 @@
+.venv/
+.pio/
+.pio-core/
+vendor/
+__pycache__/
+*.pyc
+
+# OS and editor state
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local credentials and exports
+.env
+.env.*
+!.env.example
+secrets.h
+secrets.*
+*credentials*.json
+*.log
+*.bin
+*.elf
+*.map
+
+# Upstream examples and reference material are not needed to build this app.
+# Keep the TFT driver sources, fonts, processor support and license notices.
+/lib/TFT_eSPI/examples/
+/lib/TFT_eSPI/docs/
+/lib/TFT_eSPI/Tools/
+
+# Generated release assets and compilation databases
+/dist/
+/compile_commands.json
