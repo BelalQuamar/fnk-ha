@@ -1,100 +1,99 @@
 # FNK_HA
 
-FNK_HA is a Home Assistant controller for the **Freenove FNK0104B 2.8-inch ESP32-S3 touch display**. It connects directly to Home Assistant over local Wi-Fi. The adaptive grid displays up to six entities per page and refreshes automatically every 60 seconds.
+FNK_HA turns a **Freenove FNK0104B 2.8-inch ESP32-S3 touch display** into a local Home Assistant controller. The v0.2 grid shows up to six tiles per page, with larger names and separate color-coded status badges. Long names wrap or scroll inside their tile.
+
+[Download v0.2](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.2) · [Set up Home Assistant](#connect-to-home-assistant) · [Use the display](#use-the-display)
 
 [![Firmware CI and release](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml/badge.svg)](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml)
 
-![All view captured from the Freenove display, showing the compact header, six entity tiles, and bottom page navigation](docs/device-screen.png)
+| Six-tile grid with bottom page navigation | Scrolling name and status badge |
+| --- | --- |
+| ![FNK_HA v0.2 All view on the display, showing two columns and six entity tiles](docs/fnk-ha-v02-grid.png) | ![Close-up of a long entity name scrolling above its colored status badge](docs/fnk-ha-v02-scrolling-tile.gif) |
 
-The close-up below shows a long name scrolling on an actual entity tile.
+Both images were captured over USB from the Freenove display running v0.2.
 
-![USB framebuffer captures of a long name scrolling inside its tile](docs/scrolling-name.gif)
+## Install v0.2
 
-## Install the firmware
+The release targets the **FNK0104B with a 240 × 320 ILI9341 display and 16 MB flash**. Connect the display with a USB data cable and close any serial monitor.
 
-These binaries are for the **Freenove FNK0104B 2.8-inch ILI9341 display with a 16 MB ESP32-S3**. Connect it to your computer with a USB data cable and close any open serial monitor.
-
-### Build from source
-
-To build and upload from a clone of this repository, run these commands in an activated Python virtual environment:
-
-    python -m pip install -r requirements-dev.txt
-    pio run -t upload --upload-port YOUR_USB_PORT
-
-Alternatively, open a successful [Firmware Actions run on main](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml?query=branch%3Amain), download its **fnk-ha-dev** artifact, and extract the binaries from `dev/`. Follow the flashing instructions below using the `fnk-ha-dev-merged.bin` or `fnk-ha-dev-app.bin` filename.
-
-### Flash a prebuilt binary
-
-Download the firmware, flashing instructions, and checksums from [v0.2 on GitHub](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.2). On macOS or Linux, run `shasum -a 256 -c SHA256SUMS.txt` from the directory containing the binaries.
-
-| Use | Binary suffix | Flash address |
+| Installation | Download | Flash address |
 | --- | --- | --- |
-| First installation | `-merged.bin` | `0x0` |
-| Update an existing FNK_HA installation | `-app.bin` | `0x10000` |
+| Fresh install | [Merged binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.2/fnk-ha-v0.2-merged.bin) | `0x0` |
+| Update an existing FNK_HA installation | [App-only binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.2/fnk-ha-v0.2-app.bin) | `0x10000` |
 
-The merged image replaces the existing firmware and clears saved settings. The app image requires the FNK_HA partition layout and preserves saved configuration. To flash the v0.2 merged binary, run:
+The merged binary clears saved settings. The app-only binary preserves settings and requires the FNK_HA partition layout. The [release page](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.2) includes `INSTALL.md` and `SHA256SUMS.txt`. To check the downloaded binary, compare its output from `shasum -a 256 <filename>` with the corresponding entry in `SHA256SUMS.txt`.
+
+Install esptool in a Python virtual environment:
 
     python -m pip install esptool==4.9.0
+
+For a fresh install, run:
+
     python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.2-merged.bin
 
-For an app-only update, use `write_flash 0x10000 fnk-ha-v0.2-app.bin` in the same command. USB ports typically look like `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
+For an update, run:
+
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x10000 fnk-ha-v0.2-app.bin
+
+Replace `YOUR_USB_PORT` with the display's serial port, such as `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
 
 ## Connect to Home Assistant
 
-1. From a computer on your local network, open Home Assistant using its LAN IPv4 address and port, such as `http://192.168.1.10:8123`. Use an HTTP address reachable from the display's 2.4 GHz Wi-Fi network. HTTP sends the token in plaintext, so use a trusted LAN.
-2. In Home Assistant, open your profile's **Security** tab and create a **Long-lived access token**.
-3. Clone this repository or download and extract the source archive from the release. From the source directory, install the serial dependency and run setup with the display connected.
+1. Open Home Assistant using its LAN IP and port, such as `http://192.168.1.10:8123`. Choose an address reachable from the display's 2.4 GHz Wi-Fi network. Use a trusted LAN because HTTP sends the token in plaintext.
+2. In your Home Assistant profile, open **Security** and create a **Long-lived access token**.
+3. Clone this repository or extract the source archive from the release. From that directory, run the USB setup tool with the display connected.
 
        python -m pip install pyserial==3.5
        python tools/configure.py --port YOUR_USB_PORT
 
-4. Enter the Wi-Fi network name and password, the Home Assistant LAN URL, and the token. The setup script prompts for secrets without echoing them. When it reports **Saved on ESP32**, the board restarts and loads the entity list.
+4. Enter the Wi-Fi details, Home Assistant URL, and token when prompted. After the tool reports **Saved on ESP32**, the board restarts and loads the entity list.
 
 ## Use the display
 
-The compact header shows the time, view selector, and small **Refresh** button. Tap the view selector next to **Refresh** to cycle through **Controls**, **All**, and **Favorites**. Single-page views use the area below the header for larger tiles.
+Tap the view selector beside **Refresh** to cycle through the three views.
 
-| Control | What it does |
+| View | Tiles |
 | --- | --- |
-| Entity tile | Toggles an available light, switch, fan, humidifier, or input boolean. Other tiles display their reported states. |
-| **Controls** | The default view. Shows lights, switches, fans, humidifiers, and input booleans. |
-| **All** | Shows all entities Home Assistant reports, including sensors. |
-| **Favorites** | Shows the tiles you selected in your saved order. |
-| **<** and **>** | Move between pages using the bottom bar. The bar appears only when the view needs more than one page. |
-| **REFRESH** | Tap the small top-right button to reload the list and reported states immediately. |
+| **Controls** | Lights, switches, fans, humidifiers, and input booleans. This is the default view. |
+| **All** | Every entity Home Assistant reports, including sensors. One physical device may have several entities. |
+| **Favorites** | Your pinned entities in the order you set on the display. |
 
-Tiles use the Home Assistant friendly name. A device with a switch and a power sensor appears on two tiles. Tiles use large, high-contrast names and a separate color-coded status badge. Longer names wrap or scroll at the same text size. The grid refreshes in the background every 60 seconds and picks up new, renamed, and removed entities.
+- Tap a supported tile to turn it on or off. The badge shows the reported state.
+- Tap the arrows along the bottom to change pages. Single-page views give that space to the tiles.
+- Tap **Refresh** for an immediate update. The list and states also refresh every 60 seconds, including entity additions, removals, and renames.
 
 ### Pin and reorder favorites
 
-1. In **Controls** or **All**, hold a tile for about a second, then release to pin it. A yellow dot marks pinned tiles. Repeat the gesture in **Controls** or **All** to remove a pin.
-2. Switch to **Favorites**. Hold and release a tile to move it to the front. To arrange a whole list, move tiles in reverse order, finishing with the tile you want first.
+1. In **Controls** or **All**, hold a tile for about a second and release to pin it. A yellow dot marks the tile. Repeat the gesture in either view to unpin it.
+2. In **Favorites**, hold and release a tile to move it to the front. To order a whole list, move the tiles in reverse order, finishing with the one you want first.
 
-The display saves both the active view and your favorite order across restarts.
-
-After two minutes of inactivity, the display sleeps. A tap or BOOT press wakes it. If touch is unavailable, briefly press BOOT to move focus or hold it for at least 0.8 seconds to activate the focused tile or button. Hold for at least 1.8 seconds for the favorite action. The clock uses network time and defaults to Toronto.
+The selected view and favorite order survive restarts. The display sleeps after two minutes of inactivity. The first touch or BOOT press wakes it. If touch is unavailable, tap BOOT to move focus, hold it for about one second to activate, or hold it for at least 1.8 seconds for the favorite action. The clock uses network time and defaults to Toronto.
 
 ## Troubleshooting
 
-- **DEMO** means the board needs USB setup. Run the setup script and wait for the save confirmation.
-- **Wi-Fi offline** means the board has lost its Wi-Fi connection. Check the 2.4 GHz SSID, password, and signal.
-- **Home Assistant unreachable** means the board received no HTTP response. Verify the URL in a browser on the same LAN. Use the server's LAN IP if its hostname fails to resolve and check for guest Wi-Fi isolation or VLAN rules.
-- **HA token rejected** means Home Assistant responded but refused authentication. Create a fresh token and rerun setup.
-- When a refresh fails, the previous list remains visible with offline tiles. The display retries automatically.
+| Display message | What to check |
+| --- | --- |
+| **DEMO** | Run USB setup and wait for the save confirmation. |
+| **Wi-Fi offline** | Check the 2.4 GHz SSID, password, and signal. |
+| **Home Assistant unreachable** | Open the LAN URL from the same network. Try the server's IP address if its hostname fails, and check guest Wi-Fi isolation or VLAN rules. |
+| **HA token rejected** | Create a new Home Assistant token and rerun USB setup. |
 
-## Development
+If a refresh fails, the previous list stays visible with offline badges while the display retries.
 
-To compile without uploading, run the following in an activated Python virtual environment:
+## Build from source
+
+In an activated Python virtual environment, run:
 
     python -m pip install -r requirements-dev.txt
     pio run
+    pio run -t upload --upload-port YOUR_USB_PORT
 
-Firmware uses the [Home Assistant REST API](https://developers.home-assistant.io/docs/api/rest/). The board's pin assignments are in [display_setup.h](include/display_setup.h). For USB framebuffer capture, run:
+Successful [main-branch Actions runs](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml?query=branch%3Amain) also provide a `fnk-ha-dev` artifact with binaries under `dev/`.
 
-    python tools/screenshot.py --help
-
-Run the host-side checks for layout, sleep timing, and timezone:
+Run the host checks for layout, sleep timing, and timezone:
 
     for test in tests/*_test.cpp; do
       c++ -std=c++11 -Iinclude "$test" -o /tmp/fnk-ha-test && /tmp/fnk-ha-test || exit 1
     done
+
+The [board pin assignments](include/display_setup.h) are in the repository. Use `python tools/screenshot.py --help` for USB framebuffer captures. Firmware communicates with Home Assistant through its [REST API](https://developers.home-assistant.io/docs/api/rest/).
