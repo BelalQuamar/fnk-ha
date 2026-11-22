@@ -37,16 +37,21 @@ For an app-only update, use `write_flash 0x10000 fnk-ha-v0.1-app.bin` in the sam
 
 ## Use the display
 
+The view selector and favorites are available in current source builds. The v0.1 release uses the original all-entity grid.
+
 | Control | What it does |
 | --- | --- |
 | Entity tile | Toggles an available light, switch, fan, humidifier, or input boolean. Other tiles display their reported states. |
+| **Controls**, **All**, or **Favorites** | Tap the top-right button to cycle through views. **Controls** is the default and shows only the supported on/off entity types. |
 | **<** and **>** | Move between pages. Each page fits up to nine tiles. |
-| **ALL ON** and **ALL OFF** | Send the corresponding command to supported, available entities across every page. |
+| **ALL ON** and **ALL OFF** | Send the corresponding command to supported, available entities across every page of the selected view. |
 | **REFRESH** | Reloads the list and reported states immediately. |
 
-Each entity reported by Home Assistant gets one tile, sorted by friendly name. A device with a switch and a power sensor appears on two tiles. The display refreshes every 60 seconds, picking up new, renamed, and removed entities.
+**All** shows every entity Home Assistant reports, sorted by friendly name. Names use smaller text on narrow tiles and scroll when they still exceed two lines. A device with a switch and a power sensor appears on two tiles. The display refreshes every 60 seconds, picking up new, renamed, and removed entities.
 
-After two minutes of inactivity, the display sleeps. A tap or BOOT press wakes it. If touch is unavailable, briefly press BOOT to move focus or hold it for at least 0.8 seconds to activate the focused tile or button. The clock uses network time and defaults to Toronto.
+To customize the order, press and hold a tile for about a second and release in **Controls** or **All** to add or remove it from **Favorites**. A yellow dot marks a favorite. In **Favorites**, press and hold a tile and release to move it to the front. Repeat from the last device you want in the order to the first. The display saves your selected view and favorite order through restarts.
+
+After two minutes of inactivity, the display sleeps. A tap or BOOT press wakes it. If touch is unavailable, briefly press BOOT to move focus or hold it for at least 0.8 seconds to activate the focused tile or button. Hold for at least 1.8 seconds for the favorite action. The clock uses network time and defaults to Toronto.
 
 ## Troubleshooting
 

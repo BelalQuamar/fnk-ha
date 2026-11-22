@@ -15,7 +15,7 @@ inline int visibleCount(int count, int page = 0) {
     int remaining = count - page*devicesPerPage;
     return remaining > 9 ? 9 : remaining < 0 ? 0 : remaining;
 }
-constexpr int allOn = -2, allOff = -3, refresh = -4, previous = -5, next = -6;
+constexpr int allOn = -2, allOff = -3, refresh = -4, previous = -5, next = -6, changeView = -7;
 struct Rect {
     int x, y, w, h;
     bool contains(int px, int py) const { return px >= x && px < x+w && py >= y && py < y+h; }
@@ -33,6 +33,7 @@ inline Rect tile(int index, int count) {
 }
 inline int hit(int x, int y, int count, int page = 0) {
     page = clampPage(page,count);
+    if (x >= 166 && x < 232 && y >= 3 && y < 23) return changeView;
     if (pageCount(count) > 1 && y >= 28 && y < 56) {
         if (x >= 166 && x < 194) return previous;
         if (x >= 204 && x < 232) return next;
@@ -48,11 +49,12 @@ inline int hit(int x, int y, int count, int page = 0) {
     return -1;
 }
 inline int focusCount(int count, int page) {
-    return visibleCount(count,page) + (pageCount(count)>1 ? 5 : 3);
+    return visibleCount(count,page) + (pageCount(count)>1 ? 6 : 4);
 }
 inline int focusedControl(int focus, int count, int page = 0) {
     int visible = visibleCount(count,page);
     if (focus < visible) return page*devicesPerPage+focus;
+    if (focus == focusCount(count, page) - 1) return changeView;
     switch (focus-visible) {
         case 0: return allOn;
         case 1: return allOff;

@@ -16,6 +16,15 @@ Settings settings;
 SemaphoreHandle_t stateLock;
 QueueHandle_t actions;
 std::vector<PowerItem> items;
+std::vector<size_t> viewItems;
+std::vector<String> favorites;
+enum class View : uint8_t { Controls, All, Favorites };
+View view = View::Controls;
+const char* viewLabels[] = {"CONTROLS", "ALL", "FAVORITES"};
+unsigned layoutRevision = 0;
+bool scrollingNames = false;
+unsigned long scrollStarted = 0;
+constexpr unsigned long holdMs = 650;
 String notice = "Starting...";
 bool demo = true, busy = false, touchAvailable = false, dirty = true;
 int focus = 0;
@@ -59,6 +68,43 @@ void status(const String& text, bool working) {
     Serial.println(text); // Never log credentials, tokens, or full API responses.
 }
 
+void invalidateLayout() {
+    layoutDrawn = false;
+    ++layoutRevision;
+    scrollStarted = millis();
+    dirty = true;
+}
+
+// Called with stateLock held once the network task starts.
+void rebuildView() {
+    viewItems.clear();
+    if (view == View::Favorites) {
+        for (const auto& id : favorites) {
+            auto item = std::find_if(items.begin(), items.end(), [&](const PowerItem& entry) {
+                return entry.id == id;
+            });
+            if (item != items.end()) viewItems.push_back(item - items.begin());
+        }
+    } else {
+        for (size_t i = 0; i < items.size(); ++i)
+            if (view == View::All || items[i].controllable()) viewItems.push_back(i);
+    }
+    page = UI::clampPage(page, viewItems.size());
+    if (focus >= UI::focusCount(viewItems.size(), page)) focus = 0;
+}
+
+bool saveFavorites(const std::vector<String>& next) {
+    String stored;
+    for (const auto& id : next) {
+        if (stored.length() + id.length() + 1 > 3500 ||
+            !stored.concat(id) || !stored.concat('\n')) return false;
+    }
+    Preferences prefs;
+    if (!prefs.begin("fnk-ha", false)) return false;
+    if (stored.isEmpty()) return !prefs.isKey("favorites") || prefs.remove("favorites");
+    return prefs.putString("favorites", stored) == stored.length();
+}
+
 Settings readSettings(JsonObjectConst json) {
     Settings result;
     result.ssid = json["ssid"] | "";
@@ -72,6 +118,11 @@ Settings readSettings(JsonObjectConst json) {
 void loadSettings() {
     Preferences prefs;
     if (!prefs.begin("fnk-ha", true)) return;
+    const uint8_t savedView = prefs.getUChar("view", 0);
+    if (savedView <= static_cast<uint8_t>(View::Favorites)) view = static_cast<View>(savedView);
+    const String stored = prefs.isKey("favorites") ? prefs.getString("favorites") : String();
+    for (int start = 0, end; (end = stored.indexOf('\n', start)) >= 0; start = end + 1)
+        favorites.push_back(stored.substring(start, end));
     DynamicJsonDocument json(4096);
     if (!deserializeJson(json, prefs.getString("config"))) {
         settings = readSettings(json.as<JsonObjectConst>());
@@ -113,10 +164,11 @@ void provision(const String& line) {
         char localText[48]; strftime(localText, sizeof(localText), "%Y-%m-%d %H:%M:%S %Z", &local);
         json["local_time"] = localText; json["timezone"] = "America/Toronto";
         xSemaphoreTake(stateLock, portMAX_DELAY);
-        json["channels"] = items.size(); json["status"] = notice;
-        json["ui_version"] = 6; json["font2_loaded"] = true;
+        json["channels"] = viewItems.size();
+        json["view"] = viewLabels[static_cast<uint8_t>(view)]; json["favorites"] = favorites.size(); json["status"] = notice;
+        json["ui_version"] = 7; json["font2_loaded"] = true;
         json["devices_per_page"] = UI::devicesPerPage;
-        json["page"] = page+1; json["pages"] = UI::pageCount(items.size());
+        json["page"] = page+1; json["pages"] = UI::pageCount(viewItems.size());
         json["auto_refresh_seconds"] = UI::refreshIntervalMs / 1000;
         json["discovered_channels"] = discoveredCount;
         json["renders"] = renderCount; json["redraw_pending"] = dirty;
@@ -184,14 +236,13 @@ void worker(void*) {
                 if (items.size() != found.size() ||
                     !std::equal(items.begin(), items.end(), found.begin(), [](const PowerItem& a, const PowerItem& b) {
                         return a.id == b.id && a.name == b.name && a.state == b.state;
-                    })) layoutDrawn = false;
+                    })) invalidateLayout();
                 items.swap(found);
+                rebuildView();
                 catalogLive = true;
                 discoveredCount = total;
-                page = UI::clampPage(page, items.size());
-                if (focus >= UI::focusCount(items.size(),page)) focus = 0;
                 xSemaphoreGive(stateLock);
-                status(String(total) + " entities / auto refresh 60s", false);
+                status("Auto refresh every 60s", false);
             } else {
                 xSemaphoreTake(stateLock, portMAX_DELAY);
                 catalogLive = false;
@@ -205,10 +256,11 @@ void worker(void*) {
         int sent = 0, failed = 0, skipped = 0, unconfirmed = 0;
         String lastError;
         xSemaphoreTake(stateLock, portMAX_DELAY);
-        const size_t count = items.size();
+        std::vector<size_t> targets;
+        if (action.index >= 0) targets.push_back(action.index);
+        else targets = viewItems;
         xSemaphoreGive(stateLock);
-        for (size_t i = 0; i < count; ++i) {
-            if (action.index >= 0 && (int)i != action.index) continue;
+        for (size_t i : targets) {
             xSemaphoreTake(stateLock, portMAX_DELAY);
             PowerItem item = items[i];
             xSemaphoreGive(stateLock);
@@ -261,46 +313,50 @@ void label(const String& value, int x, int y, int font, uint16_t color) {
 }
 void button(int id, const char* text, int x, int y, int w, int h, uint16_t color, bool enabled = true) {
     canvas.fillRoundRect(x, y, w, h, 8, enabled ? color : CARD);
-    if (!touchAvailable && id == UI::focusedControl(focus, items.size(), page)) canvas.drawRoundRect(x, y, w, h, 8, TFT_WHITE);
+    if (!touchAvailable && id == UI::focusedControl(focus, viewItems.size(), page)) canvas.drawRoundRect(x, y, w, h, 8, TFT_WHITE);
     canvas.setTextDatum(MC_DATUM); canvas.setTextColor(enabled ? TFT_WHITE : MUTED);
-    canvas.drawString(text, x + w/2, y + h/2, 2);
+    canvas.drawString(text, x + w/2, y + h/2, id == UI::changeView ? 1 : 2);
 }
 
-// Fit names by measured pixel width, wrapping at spaces before shortening.
-void deviceName(String name, UI::Rect rect, uint16_t foreground, uint16_t background) {
-    name.trim();
-    if (name.isEmpty()) name = "Unnamed device";
-    canvas.setTextDatum(MC_DATUM); canvas.setTextColor(foreground, background);
-    int font = rect.w >= 200 && rect.h >= 65 ? 4 : rect.h >= 42 ? 2 : 1;
-    int available = rect.w - 20;
-    int cx = rect.x + rect.w/2;
-    int centerY = rect.y + (rect.h-16)/2;
-    if (canvas.textWidth(name, font) <= available) {
-        canvas.drawString(name, cx, centerY, font); return;
+void deviceName(const String& name, UI::Rect rect, uint16_t foreground, uint16_t background) {
+    const int width = rect.w - 12;
+    const int cx = rect.x + rect.w / 2;
+    const int cy = rect.y + (rect.h - 16) / 2;
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextColor(foreground, background);
+
+    const int font = rect.w >= 100 && canvas.textWidth(name, 2) <= width ? 2 : 1;
+    const int nameWidth = canvas.textWidth(name, font);
+    if (nameWidth <= width) {
+        canvas.drawString(name, cx, cy, font);
+        return;
     }
-    unsigned cut = 0;
-    while (cut < name.length() && canvas.textWidth(name.substring(0, cut+1), font) <= available) ++cut;
-    int space = name.lastIndexOf(' ', cut);
-    if (space > 0) cut = space;
-    String first = name.substring(0, cut), second = name.substring(cut);
-    second.trim();
-    int height = canvas.fontHeight(font);
-    if (rect.h < height*2 + 20) {
-        while (first.length() && canvas.textWidth(first + "..", font) > available) first.remove(first.length()-1);
-        canvas.drawString(first + "..", cx, centerY, font); return;
+    for (int split = name.indexOf(' '); split > 0; split = name.indexOf(' ', split + 1)) {
+        const String first = name.substring(0, split);
+        if (canvas.textWidth(first, 1) > width) break;
+        const String second = name.substring(split + 1);
+        if (canvas.textWidth(second, 1) > width) continue;
+        canvas.drawString(first, cx, cy - 5, 1);
+        canvas.drawString(second, cx, cy + 5, 1);
+        return;
     }
-    if (canvas.textWidth(second, font) > available) {
-        while (second.length() && canvas.textWidth(second + "..", font) > available) second.remove(second.length()-1);
-        second += "..";
-    }
-    canvas.drawString(first, cx, centerY - height/2, font);
-    canvas.drawString(second, cx, centerY + height/2, font);
+
+    scrollingNames = true;
+    const unsigned long elapsed = millis() - scrollStarted;
+    const int period = nameWidth + 24;
+    const int offset = ((elapsed < 800 ? 0 : elapsed - 800) / 35) % period;
+    canvas.setViewport(rect.x + 6, cy - 4, width, 8);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.drawString(name, -offset, 0, 1);
+    canvas.drawString(name, period - offset, 0, 1);
+    canvas.resetViewport();
 }
 
 void draw() {
     xSemaphoreTake(stateLock, portMAX_DELAY);
     dirty = false;
     ++renderCount;
+    scrollingNames = false;
     canvas.fillSprite(BG);
     const time_t now = time(nullptr);
     const bool synced = now >= 1700000000;
@@ -318,11 +374,12 @@ void draw() {
     canvas.drawString(secondsText, 140, 30, 2);
     label(dateText, 8, 52, synced ? 4 : 2, TFT_WHITE);
     canvas.setTextDatum(TR_DATUM); canvas.setTextColor(MUTED, BG);
-    canvas.drawString("FNK_HA", 232, 4, 1);
-    canvas.drawString(zoneText, 232, 16, 1);
-    page = UI::clampPage(page, items.size());
-    const int pages = UI::pageCount(items.size());
-    const int visible = UI::visibleCount(items.size(),page);
+    button(UI::changeView, viewLabels[static_cast<uint8_t>(view)], 166, 3, 66, 20, 0x2250);
+    canvas.setTextDatum(TR_DATUM); canvas.setTextColor(MUTED, BG);
+    canvas.drawString(zoneText, 230, 69, 1);
+    page = UI::clampPage(page, viewItems.size());
+    const int pages = UI::pageCount(viewItems.size());
+    const int visible = UI::visibleCount(viewItems.size(),page);
     if (pages > 1) {
         button(UI::previous, "<", 166, 28, 28, 28, CARD, page > 0);
         button(UI::next, ">", 204, 28, 28, 28, CARD, page+1 < pages);
@@ -330,13 +387,13 @@ void draw() {
         canvas.drawString(String(page+1) + "/" + pages, 199, 65, 1);
     } else {
         canvas.setTextDatum(TR_DATUM); canvas.setTextColor(MUTED, BG);
-        canvas.drawString(String(items.size()), 230, 38, 2);
+        canvas.drawString(String(viewItems.size()), 230, 38, 2);
     }
     label(shortText(demo ? "DEMO - configure via USB" : notice, 36), 8, 80, 1, TFT_CYAN);
     for (int slot = 0; slot < visible; ++slot) {
         size_t index = page*UI::devicesPerPage + slot;
         UI::Rect rect = UI::tile(slot, visible);
-        const auto& item = items[index];
+        const auto& item = items[viewItems[index]];
         const bool online = item.online && (catalogLive || demo);
         const bool pending = item.controllable() && (item.sent || !item.known);
         uint16_t fill = !online ? 0x632C : pending ? 0xFBC0 :
@@ -345,7 +402,9 @@ void draw() {
         int radius = min(12, min(rect.h/3, rect.w/3));
         canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, radius, fill);
         canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, radius,
-            !touchAvailable && (int)index == UI::focusedControl(focus, items.size(), page) ? TFT_WHITE : item.on && item.known ? 0x4F77 : 0x528A);
+            !touchAvailable && (int)index == UI::focusedControl(focus, viewItems.size(), page) ? TFT_WHITE : item.on && item.known ? 0x4F77 : 0x528A);
+        if (std::find(favorites.begin(), favorites.end(), item.id) != favorites.end())
+            canvas.fillCircle(rect.x + 9, rect.y + 8, 2, TFT_YELLOW);
         deviceName(item.name, rect, ink, fill);
         String state = !online ? "OFFLINE" : item.sent ? "UPDATING" :
             item.controllable() && !item.known ? "UNKNOWN" :
@@ -358,13 +417,16 @@ void draw() {
         canvas.setTextDatum(MC_DATUM); canvas.setTextColor(ink, fill);
         if (rect.h >= 35) canvas.drawString(state, rect.x + rect.w/2, rect.y + rect.h - 12, 1);
     }
-    if (items.empty()) {
-        label(busy ? "Loading devices..." : "No devices loaded", 20, 110, 2, MUTED);
-        label("Tap Refresh to try again", 20, 140, 2, MUTED);
+    if (viewItems.empty()) {
+        if (busy) label("Loading devices...", 20, 110, 2, MUTED);
+        else if (view == View::Favorites) {
+            label("No favorites yet", 20, 110, 2, MUTED);
+            label("Hold a tile in All or Controls", 20, 140, 2, MUTED);
+        } else label(view == View::Controls ? "No controls found" : "No devices loaded", 20, 110, 2, MUTED);
     }
     const bool canControl = !busy && (catalogLive || demo) &&
-        std::any_of(items.begin(), items.end(), [](const PowerItem& item) {
-            return item.online && item.controllable();
+        std::any_of(viewItems.begin(), viewItems.end(), [](size_t index) {
+            return items[index].online && items[index].controllable();
         });
     button(UI::allOn, "ALL ON", 8, 284, 70, 32, GREEN, canControl);
     button(UI::allOff, "ALL OFF", 85, 284, 70, 32, TFT_BLACK, canControl);
@@ -375,30 +437,75 @@ void draw() {
 }
 
 // Called with stateLock held.
-void activate(int id) {
+void activate(int id, bool hold = false) {
+    if (!layoutDrawn || id == -1) return;
     if (id == UI::previous || id == UI::next) {
-        page = UI::clampPage(page + (id == UI::next ? 1 : -1), items.size());
-        focus = 0; dirty = true; layoutDrawn = false;
+        page = UI::clampPage(page + (id == UI::next ? 1 : -1), viewItems.size());
+        focus = 0;
+        invalidateLayout();
         return;
     }
-    if (busy || (!layoutDrawn && id != UI::refresh) ||
-        (!demo && !catalogLive && id != UI::refresh)) { return; }
+    if (busy) return;
+    if (id == UI::changeView) {
+        const auto next = static_cast<uint8_t>((static_cast<uint8_t>(view) + 1) % 3);
+        Preferences prefs;
+        if (!prefs.begin("fnk-ha", false) || !prefs.putUChar("view", next)) {
+            notice = "Could not save view"; dirty = true; return;
+        }
+        view = static_cast<View>(next);
+        page = focus = 0;
+        rebuildView();
+        invalidateLayout();
+        return;
+    }
+
     Action action{-1, false};
-    if (id >= 0 && id < (int)items.size()) {
-        action.index = id;
-        if ((size_t)action.index >= items.size() || !items[action.index].online || !items[action.index].controllable()) {
+    if (id >= 0 && static_cast<size_t>(id) < viewItems.size()) {
+        action.index = viewItems[id];
+        const PowerItem& item = items[action.index];
+        if (hold) {
+            auto next = favorites;
+            auto match = std::find(next.begin(), next.end(), item.id);
+            if (view == View::Favorites) {
+                if (match == next.end() || match == next.begin()) return;
+                std::rotate(next.begin(), match, match + 1);
+            } else if (match == next.end()) {
+                next.push_back(item.id);
+            } else {
+                next.erase(match);
+            }
+            if (next == favorites) return;
+            if (saveFavorites(next)) {
+                favorites.swap(next);
+                if (view == View::Favorites) page = focus = 0;
+                rebuildView();
+                notice = view == View::Favorites ? "Favorite moved to first" : "Favorites updated";
+                invalidateLayout();
+            } else {
+                notice = "Could not save favorites";
+                dirty = true;
+            }
             return;
         }
-        // Read unknown states instead of guessing which command a toggle means.
-        if (!items[action.index].known) action.index = -1;
-        else action.on = !items[action.index].on;
+        if ((!catalogLive && !demo) || !item.online || !item.controllable()) return;
+        if (!item.known) action.index = -1;
+        else action.on = !item.on;
     } else if (id == UI::allOn || id == UI::allOff) {
-        action.index = -2; action.on = id == UI::allOn;
-    } else if (id != UI::refresh) { return; }
+        if (hold || (!catalogLive && !demo)) return;
+        action.index = -2;
+        action.on = id == UI::allOn;
+    } else if (id != UI::refresh) return;
+
     if (demo) {
-        if (action.index != -1) for (size_t i = 0; i < items.size(); ++i)
-            if (action.index == -2 || action.index == (int)i) { items[i].on = action.on; items[i].state = action.on ? "on" : "off"; }
-        notice = "Demo only - configure via USB"; dirty = true;
+        if (action.index != -1) {
+            for (size_t i : viewItems) {
+                if (action.index == -2 || action.index == static_cast<int>(i)) {
+                    items[i].on = action.on;
+                    items[i].state = action.on ? "on" : "off";
+                }
+            }
+        }
+        dirty = true;
     } else if (xQueueSend(actions, &action, 0) == pdTRUE) {
         busy = true; notice = "Updating device..."; dirty = true;
     }
@@ -427,8 +534,9 @@ void setup() {
     if (demo) {
         notice = "Configure with tools/configure.py";
         for (const char* name : {"Living room (demo)", "Desk lamp (demo)", "Smart plug (demo)"}) {
-            PowerItem item; item.name = name; item.domain = "switch"; item.state = "off"; item.online = item.known = true; items.push_back(item);
+            PowerItem item; item.name = name; item.id = String("demo.") + items.size(); item.domain = "switch"; item.state = "off"; item.online = item.known = true; items.push_back(item);
         }
+        rebuildView();
     } else {
         busy = true;
         if (xTaskCreate(worker, "home-assistant", 16384, nullptr, 1, nullptr) != pdPASS) {
@@ -454,21 +562,34 @@ void loop() {
         }
     }
     static bool touched = false;
+    static int touchId = -1;
+    static unsigned touchRevision = 0;
+    static unsigned long touchStarted = 0;
     if (touchAvailable) {
         Wire.beginTransmission(0x38); Wire.write(2);
         if (Wire.endTransmission(false) == 0 && Wire.requestFrom(0x38, 5) == 5) {
             const uint8_t count = Wire.read() & 15;
             const int xh = Wire.read(), xl = Wire.read(), yh = Wire.read(), yl = Wire.read();
-            bool wakeGesture = false;
-            if (count > 0 && count <= 2) wakeGesture = displayActivity();
-            if (count > 0 && count <= 2 && !touched && !wakeGesture) {
+            const bool down = count > 0;
+            if (down) {
+                const bool waking = displayActivity();
                 const int x = ((xh & 15) << 8) | xl, y = ((yh & 15) << 8) | yl;
-                if (x < 240 && y < 320) { xSemaphoreTake(stateLock, portMAX_DELAY);
-                    int id = UI::hit(x, y, items.size(), page);
-                    if (id != -1) activate(id);
-                    xSemaphoreGive(stateLock); }
+                xSemaphoreTake(stateLock, portMAX_DELAY);
+                const int id = UI::hit(x, y, viewItems.size(), page);
+                if (!touched) {
+                    touchId = !waking && layoutDrawn && count == 1 ? id : -1;
+                    touchStarted = millis();
+                    touchRevision = layoutRevision;
+                } else if (id != touchId || count != 1) {
+                    touchId = -1;
+                }
+                xSemaphoreGive(stateLock);
+            } else if (touched && touchId != -1) {
+                xSemaphoreTake(stateLock, portMAX_DELAY);
+                if (touchRevision == layoutRevision) activate(touchId, millis() - touchStarted >= holdMs);
+                xSemaphoreGive(stateLock);
             }
-            touched = count > 0;
+            touched = down;
         }
     }
     static unsigned long pressedAt = 0;
@@ -483,19 +604,23 @@ void loop() {
         if (buttonWakeOnly) { buttonWakeOnly = false; }
         else if (held >= 800) {
             xSemaphoreTake(stateLock, portMAX_DELAY);
-            int id = UI::focusedControl(focus, items.size(), page);
-            activate(id);
+            int id = UI::focusedControl(focus, viewItems.size(), page);
+            activate(id, held >= 1800);
             xSemaphoreGive(stateLock);
         }
-        else if (held >= 40) { xSemaphoreTake(stateLock, portMAX_DELAY); focus = (focus + 1) % UI::focusCount(items.size(),page); dirty = true; xSemaphoreGive(stateLock); }
+        else if (held >= 40) { xSemaphoreTake(stateLock, portMAX_DELAY); focus = (focus + 1) % UI::focusCount(viewItems.size(),page); dirty = true; xSemaphoreGive(stateLock); }
     }
     if (displayIdle.sleepDue(millis())) sleepDisplay();
     static time_t lastSecond = -1;
     time_t second = time(nullptr);
+    static unsigned long lastFrame = 0;
     bool redraw;
     xSemaphoreTake(stateLock, portMAX_DELAY);
     if (second != lastSecond) { lastSecond = second; dirty = true; }
-    redraw = dirty; xSemaphoreGive(stateLock);
-    if (redraw && !displayIdle.isAsleep()) draw();
+    redraw = dirty || (scrollingNames && millis() - lastFrame >= 85); xSemaphoreGive(stateLock);
+    if (redraw && !displayIdle.isAsleep()) {
+        draw();
+        lastFrame = millis();
+    }
     delay(20);
 }

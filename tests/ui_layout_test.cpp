@@ -1,5 +1,6 @@
 #include "ui_layout.h"
 #include <cassert>
+#include <initializer_list>
 int main() {
     for (int count=1; count<=200; ++count) {
         for (int page=0; page<UI::pageCount(count); ++page) {
@@ -34,6 +35,12 @@ int main() {
     assert(UI::hit(tile.x, tile.y, largeCount, largePage) == 1000);
     assert(UI::hit(10, 290, largeCount, largePage) != 1000);
     assert(UI::focusedControl(1, largeCount, largePage) == 1000);
+    for (int count : {0, 1, 9, 10, 1000}) {
+        assert(UI::hit(166, 3, count) == UI::changeView);
+        assert(UI::hit(231, 22, count) == UI::changeView);
+        assert(UI::hit(232, 22, count) != UI::changeView);
+        assert(UI::focusedControl(UI::focusCount(count, 0) - 1, count) == UI::changeView);
+    }
     assert(UI::pageCount(0)==1);
     assert(UI::pageCount(9)==1 && UI::pageCount(10)==2 && UI::pageCount(19)==3);
     assert(UI::visibleCount(10,1)==1);
