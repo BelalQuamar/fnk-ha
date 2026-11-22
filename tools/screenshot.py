@@ -35,7 +35,7 @@ def main():
                 line = device.readline().decode(errors='replace').strip()
                 if line.startswith('{'):
                     info = json.loads(line)
-                    if info.get('channels', 0) or info.get('demo'):
+                    if info.get('discovered_channels', 0) or info.get('channels', 0) or info.get('demo'):
                         deadline = 0
                     break
             if deadline == 0:

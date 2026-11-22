@@ -132,11 +132,26 @@ private:
 };
 }
 
-bool HomeAssistant::discover(std::vector<PowerItem>& items) {
+bool HomeAssistant::readTimezone(String& zone) {
+    Request request;
+    String requestError;
+    if (!request.send(config, "/api/config", requestError)) return false;
+    StaticJsonDocument<96> filter;
+    filter["time_zone"] = true;
+    StaticJsonDocument<512> json;
+    if (deserializeJson(json, request.http.getStream(), DeserializationOption::Filter(filter))) return false;
+    zone = json["time_zone"] | "";
+    return !zone.isEmpty();
+}
+
+bool HomeAssistant::discover(std::vector<PowerItem>& items, IPAddress& serverIp) {
     Request request;
     if (!request.send(config, "/api/states", error)) return false;
-    EntityReader reader(request.http.getStream());
+    auto* stream = request.http.getStreamPtr();
     error = "Incomplete HA entity list";
+    if (!stream) return false;
+    serverIp = stream->remoteIP();
+    EntityReader reader(*stream);
     if (reader.token() != '[') return false;
 
     // Parse one filtered object at a time, regardless of the total JSON size.

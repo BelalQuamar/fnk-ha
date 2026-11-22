@@ -20,11 +20,12 @@ struct Rect {
     int x, y, w, h;
     bool contains(int px, int py) const { return px >= x && px < x+w && py >= y && py < y+h; }
 };
-constexpr Rect viewButton{107, 4, 65, 24};
-constexpr Rect refreshButton{180, 4, 52, 24};
-constexpr Rect previousButton{52, 289, 40, 25};
-constexpr Rect nextButton{148, 289, 40, 25};
-inline int gridBottom(int count) { return pageCount(count) > 1 ? 283 : 312; }
+constexpr Rect refreshButton{5, 287, 30, 28};
+constexpr Rect previousButton{40, 287, 34, 28};
+constexpr Rect pageIndicator{76, 287, 45, 28};
+constexpr Rect nextButton{123, 287, 34, 28};
+constexpr Rect viewButton{162, 287, 73, 28};
+constexpr int gridBottom = 283;
 
 inline Rect tile(int index, int count, int page = 0) {
     const int visible = visibleCount(count, page);
@@ -33,7 +34,7 @@ inline Rect tile(int index, int count, int page = 0) {
     const int gap = 5, margin = 5, gridWidth = 240 - 2*margin;
     const bool wideLastTile = columns == 2 && visible % 2 && index == visible - 1;
     const int width = (gridWidth - (columns-1)*gap) / columns;
-    const int height = (gridBottom(count) - gridTop - (rows-1)*gap) / rows;
+    const int height = (gridBottom - gridTop - (rows-1)*gap) / rows;
     return {margin + (index % columns)*(width+gap), gridTop + (index/columns)*(height+gap),
             wideLastTile ? gridWidth : width, height};
 }
@@ -57,10 +58,10 @@ inline int focusedControl(int focus, int count, int page = 0) {
     const int visible = visibleCount(count, page);
     if (focus < visible) return page*devicesPerPage+focus;
     switch (focus-visible) {
-        case 0: return changeView;
-        case 1: return refresh;
-        case 2: return previous;
-        default: return next;
+        case 0: return refresh;
+        case 1: return pageCount(count) > 1 ? previous : changeView;
+        case 2: return next;
+        default: return changeView;
     }
 }
 }

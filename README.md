@@ -1,27 +1,27 @@
 # FNK_HA
 
-FNK_HA turns a **Freenove FNK0104B 2.8-inch ESP32-S3 touch display** into a local Home Assistant controller. The v0.2 grid shows up to six tiles per page, with larger names and separate color-coded status badges. Long names wrap or scroll inside their tile.
+FNK_HA turns a **Freenove FNK0104B 2.8-inch ESP32-S3 touch display** into a local Home Assistant controller. The grid shows up to six tiles per page, with two-line names and separate status badges. The Settings view shows network and firmware details directly on the display.
 
-[Download v0.2](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.2) · [Set up Home Assistant](#connect-to-home-assistant) · [Use the display](#use-the-display)
+[Download v0.3](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.3) · [Set up Home Assistant](#connect-to-home-assistant) · [Use the display](#use-the-display)
 
 [![Firmware CI and release](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml/badge.svg)](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml)
 
-| Six-tile grid with bottom page navigation | Scrolling name and status badge |
+| Device grid | Connection and device details |
 | --- | --- |
-| ![FNK_HA v0.2 All view on the display, showing two columns and six entity tiles](docs/fnk-ha-v02-grid.png) | ![Close-up of a long entity name scrolling above its colored status badge](docs/fnk-ha-v02-scrolling-tile.gif) |
+| ![FNK_HA v0.3 All view with six tiles, a date beside the clock, and bottom navigation](docs/fnk-ha-v03-grid.png) | ![FNK_HA v0.3 Settings view with Wi-Fi and Home Assistant connection details](docs/fnk-ha-v03-settings.png) |
 
-Both images were captured over USB from the Freenove display running v0.2.
+Both screenshots were captured over USB from the Freenove display. The Settings screenshot uses example network names and addresses.
 
-## Install v0.2
+## Install v0.3
 
 The release targets the **FNK0104B with a 240 × 320 ILI9341 display and 16 MB flash**. Connect the display with a USB data cable and close any serial monitor.
 
 | Installation | Download | Flash address |
 | --- | --- | --- |
-| Fresh install | [Merged binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.2/fnk-ha-v0.2-merged.bin) | `0x0` |
-| Update an existing FNK_HA installation | [App-only binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.2/fnk-ha-v0.2-app.bin) | `0x10000` |
+| Fresh install | [Merged binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.3/fnk-ha-v0.3-merged.bin) | `0x0` |
+| Update an existing FNK_HA installation | [App-only binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.3/fnk-ha-v0.3-app.bin) | `0x10000` |
 
-The merged binary clears saved settings. The app-only binary preserves settings and requires the FNK_HA partition layout. The [release page](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.2) includes `INSTALL.md` and `SHA256SUMS.txt`. To check the downloaded binary, compare its output from `shasum -a 256 <filename>` with the corresponding entry in `SHA256SUMS.txt`.
+The merged binary clears saved settings. The app-only binary preserves settings and requires the FNK_HA partition layout. The [release page](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.3) includes `INSTALL.md` and `SHA256SUMS.txt`. To check the downloaded binary, compare its output from `shasum -a 256 <filename>` with the corresponding entry in `SHA256SUMS.txt`.
 
 Install esptool in a Python virtual environment:
 
@@ -29,11 +29,11 @@ Install esptool in a Python virtual environment:
 
 For a fresh install, run:
 
-    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.2-merged.bin
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.3-merged.bin
 
 For an update, run:
 
-    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x10000 fnk-ha-v0.2-app.bin
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x10000 fnk-ha-v0.3-app.bin
 
 Replace `YOUR_USB_PORT` with the display's serial port, such as `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
 
@@ -50,24 +50,27 @@ Replace `YOUR_USB_PORT` with the display's serial port, such as `/dev/cu.usbmode
 
 ## Use the display
 
-Tap the view selector beside **Refresh** to cycle through the three views.
+Tap the bottom-right view selector to cycle through **Controls**, **All**, **Favorites**, and **Settings**.
 
 | View | Tiles |
 | --- | --- |
 | **Controls** | Lights, switches, fans, humidifiers, and input booleans. This is the default view. |
 | **All** | Every entity Home Assistant reports, including sensors. One physical device may have several entities. |
 | **Favorites** | Your pinned entities in the order you set on the display. |
+| **Settings** | Wi-Fi name, connection status, signal strength, device and server IP addresses, Home Assistant URL, firmware version, and timezone. |
 
-- Tap a supported tile to turn it on or off. The badge shows the reported state.
-- Tap the arrows along the bottom to change pages. Single-page views give that space to the tiles.
-- Tap **Refresh** for an immediate update. The list and states also refresh every 60 seconds, including entity additions, removals, and renames.
+- Tap a supported tile to turn it on or off. Its badge shows the reported state. Long names split across two lines, and each line scrolls if it still exceeds the tile width.
+- Tap the larger arrows in the footer to change pages. The arrows and page count appear when the view has more than one page.
+- Tap the circular arrow at the bottom left to refresh or check the connection. The entity list and states also refresh automatically every 60 seconds.
 
 ### Pin and reorder favorites
 
 1. In **Controls** or **All**, hold a tile for about a second and release to pin it. A yellow dot marks the tile. Repeat the gesture in either view to unpin it.
 2. In **Favorites**, hold and release a tile to move it to the front. To order a whole list, move the tiles in reverse order, finishing with the one you want first.
 
-The selected view and favorite order survive restarts. The display sleeps after two minutes of inactivity. The first touch or BOOT press wakes it. If touch is unavailable, tap BOOT to move focus, hold it for about one second to activate, or hold it for at least 1.8 seconds for the favorite action. The clock uses network time and defaults to Toronto.
+The selected view and favorite order survive restarts. The display sleeps after two minutes of inactivity. The first touch or BOOT press wakes it. If touch is unavailable, tap BOOT to move focus, hold it for about one second to activate, or hold it for at least 1.8 seconds for the favorite action.
+
+The header shows the time and date in Home Assistant's configured timezone and adjusts for daylight saving time. Open **Settings** to see the timezone. Until Home Assistant supplies a timezone, the display uses its last known timezone for that server, or UTC on a fresh installation.
 
 ## Troubleshooting
 

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <IPAddress.h>
 #include <vector>
 
 struct Settings {
@@ -22,7 +23,8 @@ struct PowerItem {
 class HomeAssistant {
 public:
     explicit HomeAssistant(const Settings& settings) : config(settings) {}
-    bool discover(std::vector<PowerItem>& items);
+    bool readTimezone(String& zone);
+    bool discover(std::vector<PowerItem>& items, IPAddress& serverIp);
     bool command(const PowerItem& item, bool on);
     bool refreshState(PowerItem& item);
     String error;

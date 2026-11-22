@@ -13,14 +13,17 @@
 TFT_eSPI screen;
 TFT_eSprite canvas(&screen);
 Settings settings;
+IPAddress homeAssistantIp;
+constexpr const char* firmwareVersion = FNK_HA_VERSION;
+const ClockZone* clockZone = findClockZone("UTC");
 SemaphoreHandle_t stateLock;
 QueueHandle_t actions;
 std::vector<PowerItem> items;
 std::vector<size_t> viewItems;
 std::vector<String> favorites;
-enum class View : uint8_t { Controls, All, Favorites };
+enum class View : uint8_t { Controls, All, Favorites, Settings, Count };
 View view = View::Controls;
-const char* viewLabels[] = {"CONTROLS", "ALL", "FAVORITES"};
+const char* viewLabels[] = {"CONTROLS", "ALL", "FAVORITES", "SETTINGS"};
 unsigned layoutRevision = 0;
 bool scrollingNames = false;
 unsigned long scrollStarted = 0;
@@ -85,7 +88,7 @@ void rebuildView() {
             });
             if (item != items.end()) viewItems.push_back(item - items.begin());
         }
-    } else {
+    } else if (view != View::Settings) {
         for (size_t i = 0; i < items.size(); ++i)
             if (view == View::All || items[i].controllable()) viewItems.push_back(i);
     }
@@ -119,7 +122,7 @@ void loadSettings() {
     Preferences prefs;
     if (!prefs.begin("fnk-ha", true)) return;
     const uint8_t savedView = prefs.getUChar("view", 0);
-    if (savedView <= static_cast<uint8_t>(View::Favorites)) view = static_cast<View>(savedView);
+    if (savedView < static_cast<uint8_t>(View::Count)) view = static_cast<View>(savedView);
     const String stored = prefs.isKey("favorites") ? prefs.getString("favorites") : String();
     for (int start = 0, end; (end = stored.indexOf('\n', start)) >= 0; start = end + 1)
         favorites.push_back(stored.substring(start, end));
@@ -127,7 +130,37 @@ void loadSettings() {
     if (!deserializeJson(json, prefs.getString("config"))) {
         settings = readSettings(json.as<JsonObjectConst>());
     }
+    if (settings.valid()) {
+        const int port = settings.url.indexOf(':', 7);
+        homeAssistantIp.fromString((port < 0 ? settings.url.substring(7) : settings.url.substring(7, port)).c_str());
+    }
+    if (prefs.isKey("clockZone")) {
+        const String stored = prefs.getString("clockZone");
+        const int separator = stored.indexOf('\n');
+        if (separator > 0 && stored.substring(0, separator) == settings.url) {
+            const auto* saved = findClockZone(stored.c_str() + separator + 1);
+            if (saved) clockZone = saved;
+        }
+    }
 }
+void updateClockZone(const String& name) {
+    const auto* found = findClockZone(name.c_str());
+    if (!found) return;
+
+    xSemaphoreTake(stateLock, portMAX_DELAY);
+    const bool changed = clockZone != found;
+    clockZone = found;
+    dirty = dirty || changed;
+    xSemaphoreGive(stateLock);
+
+    Preferences prefs;
+    if (prefs.begin("fnk-ha", false)) {
+        const String value = settings.url + "\n" + name;
+        if (!prefs.isKey("clockZone") || prefs.getString("clockZone") != value)
+            prefs.putString("clockZone", value);
+    }
+}
+
 void provision(const String& line) {
     DynamicJsonDocument json(4096);
     if (deserializeJson(json, line)) { Serial.println("SETUP_ERROR invalid JSON"); return; }
@@ -159,14 +192,23 @@ void provision(const String& line) {
         json["backlight_on"] = digitalRead(TFT_BL) == TFT_BACKLIGHT_ON;
         json["display_timeout_seconds"] = DisplayIdle::timeoutMs / 1000;
         time_t now = time(nullptr);
-        json["clock_synced"] = now >= 1700000000;
-        tm local; localtime_r(&now, &local);
-        char localText[48]; strftime(localText, sizeof(localText), "%Y-%m-%d %H:%M:%S %Z", &local);
-        json["local_time"] = localText; json["timezone"] = "America/Toronto";
+        json["clock_synced"] = now >= firstSynchronizedTime;
         xSemaphoreTake(stateLock, portMAX_DELAY);
+        tm local{};
+        const char* abbreviation = clockLocalTime(now, *clockZone, local);
+        char localText[32];
+        strftime(localText, sizeof(localText), "%Y-%m-%d %H:%M:%S", &local);
+        json["local_time"] = String(localText) + " " + abbreviation;
+        json["timezone"] = clockZone->name;
         json["channels"] = viewItems.size();
         json["view"] = viewLabels[static_cast<uint8_t>(view)]; json["favorites"] = favorites.size(); json["status"] = notice;
-        json["ui_version"] = 9; json["font2_loaded"] = true;
+        json["ui_version"] = 15; json["font2_loaded"] = true;
+        json["firmware_version"] = firmwareVersion;
+        const bool connected = WiFi.status() == WL_CONNECTED;
+        json["wifi_connected"] = connected;
+        json["device_ip"] = connected ? WiFi.localIP().toString() : String();
+        json["ha_connected"] = connected && catalogLive;
+        json["ha_ip"] = homeAssistantIp != IPAddress() ? homeAssistantIp.toString() : String();
         json["devices_per_page"] = UI::devicesPerPage;
         json["page"] = page+1; json["pages"] = UI::pageCount(viewItems.size());
         json["auto_refresh_seconds"] = UI::refreshIntervalMs / 1000;
@@ -204,7 +246,7 @@ void worker(void*) {
         const bool reconnected = connected && !wasConnected;
         wasConnected = connected;
         if (connected && !clockStarted) {
-            configTzTime(localTimezone, ntpPrimary, ntpSecondary);
+            configTzTime("UTC0", ntpPrimary, ntpSecondary);
             clockStarted = true;
         }
         if (!first && xQueueReceive(actions, &action, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -230,7 +272,10 @@ void worker(void*) {
         if (action.index == -1) {
             status("Loading HA entities...", true);
             std::vector<PowerItem> found;
-            if (ha.discover(found)) {
+            IPAddress serverIp;
+            if (ha.discover(found, serverIp)) {
+                String zone;
+                if (ha.readTimezone(zone)) updateClockZone(zone);
                 const unsigned total = found.size();
                 xSemaphoreTake(stateLock, portMAX_DELAY);
                 if (items.size() != found.size() ||
@@ -238,6 +283,7 @@ void worker(void*) {
                         return a.id == b.id && a.name == b.name && a.state == b.state;
                     })) invalidateLayout();
                 items.swap(found);
+                if (serverIp != IPAddress()) homeAssistantIp = serverIp;
                 rebuildView();
                 catalogLive = true;
                 discoveredCount = total;
@@ -291,44 +337,96 @@ void label(const String& value, int x, int y, int font, uint16_t color) {
     canvas.setTextDatum(TL_DATUM); canvas.setTextColor(color, BG);
     canvas.drawString(value, x, y, font);
 }
-void button(int id, const char* text, UI::Rect rect, uint16_t color, bool enabled = true) {
-    const int x = rect.x, y = rect.y, w = rect.w, h = rect.h;
-    canvas.fillRoundRect(x, y, w, h, 8, enabled ? color : CARD);
-    if (!touchAvailable && id == UI::focusedControl(focus, viewItems.size(), page)) canvas.drawRoundRect(x, y, w, h, 8, TFT_WHITE);
-    canvas.setTextDatum(MC_DATUM); canvas.setTextColor(enabled ? TFT_WHITE : MUTED);
-    canvas.drawString(text, x + w/2, y + h/2, (id == UI::changeView || id == UI::refresh) ? 1 : 2);
+void button(int id, UI::Rect rect, uint16_t color, bool enabled = true, const char* text = "") {
+    const int cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+    const uint16_t fill = enabled ? color : CARD;
+    const uint16_t ink = enabled ? TFT_WHITE : MUTED;
+    canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 8, fill);
+    if (!touchAvailable && id == UI::focusedControl(focus, viewItems.size(), page))
+        canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 8, TFT_WHITE);
+
+    if (id == UI::refresh) {
+        canvas.drawSmoothArc(cx - 1, cy, 8, 6, 325, 270, ink, fill);
+        canvas.fillTriangle(cx + 3, cy - 1, cx + 11, cy - 1, cx + 7, cy + 4, ink);
+    } else if (id == UI::previous || id == UI::next) {
+        const int direction = id == UI::next ? 1 : -1;
+        canvas.drawWideLine(cx - direction*4, cy - 6, cx + direction*3, cy, 3, ink, fill);
+        canvas.drawWideLine(cx + direction*3, cy, cx - direction*4, cy + 6, 3, ink, fill);
+    } else {
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextColor(ink);
+        canvas.drawString(text, cx, cy, canvas.textWidth(text, 2) <= rect.w - 10 ? 2 : 1);
+    }
 }
 
-void deviceName(const String& name, UI::Rect area, uint16_t background) {
-    const int center = area.y + area.h / 2;
-    const int font = area.w >= 190 && canvas.textWidth(name, 4) <= area.w ? 4 : 2;
-    const int nameWidth = canvas.textWidth(name, font);
-    canvas.setTextDatum(ML_DATUM);
-    canvas.setTextColor(TFT_WHITE, background);
-    if (nameWidth <= area.w) {
-        canvas.drawString(name, area.x, center, font);
-        return;
-    }
-    const int lineHeight = canvas.fontHeight(font);
-    for (int split = name.indexOf(' '); split > 0; split = name.indexOf(' ', split + 1)) {
-        const String first = name.substring(0, split);
-        if (canvas.textWidth(first, font) > area.w) break;
-        const String second = name.substring(split + 1);
-        if (canvas.textWidth(second, font) > area.w) continue;
-        canvas.drawString(first, area.x, center - lineHeight / 2, font);
-        canvas.drawString(second, area.x, center + lineHeight / 2, font);
+void drawNameLine(const String& text, UI::Rect line, int font) {
+    const int width = canvas.textWidth(text, font);
+    canvas.setTextDatum(TL_DATUM);
+    if (width <= line.w) {
+        canvas.drawString(text, line.x, line.y, font);
         return;
     }
 
     scrollingNames = true;
     const unsigned long elapsed = millis() - scrollStarted;
-    const int period = nameWidth + 28;
+    const int period = width + 28;
     const int offset = ((elapsed < 800 ? 0 : elapsed - 800) / 35) % period;
-    canvas.setViewport(area.x, center - lineHeight / 2, area.w, lineHeight);
-    canvas.setTextDatum(TL_DATUM);
-    canvas.drawString(name, -offset, 0, font);
-    canvas.drawString(name, period - offset, 0, font);
+    canvas.setViewport(line.x, line.y, line.w, line.h);
+    canvas.drawString(text, -offset, 0, font);
+    canvas.drawString(text, period - offset, 0, font);
     canvas.resetViewport();
+}
+
+void deviceName(const String& name, UI::Rect area, uint16_t background) {
+    const int font = area.w >= 190 && canvas.textWidth(name, 4) <= area.w ? 4 : 2;
+    const int lineHeight = canvas.fontHeight(font);
+    const int width = canvas.textWidth(name, font);
+    canvas.setTextColor(TFT_WHITE, background);
+    if (width <= area.w) {
+        drawNameLine(name, {area.x, area.y + (area.h - lineHeight) / 2, area.w, lineHeight}, font);
+        return;
+    }
+
+    // Prefer a word boundary that balances the width of the two rows.
+    int split = 0;
+    int smallestDifference = width;
+    for (int space = name.indexOf(' '); space >= 0; space = name.indexOf(' ', space + 1)) {
+        if (space == 0 || space + 1 >= name.length()) continue;
+        const int left = canvas.textWidth(name.substring(0, space), font);
+        const int right = canvas.textWidth(name.substring(space + 1), font);
+        const int difference = abs(left - right);
+        if (difference < smallestDifference) {
+            split = space;
+            smallestDifference = difference;
+        }
+    }
+
+    // An unbroken name still gets two rows. Never split inside a UTF-8 character.
+    if (split == 0) {
+        for (unsigned i = 1; i < name.length(); ++i) {
+            if ((static_cast<uint8_t>(name[i]) & 0xC0) == 0x80) continue;
+            const int left = canvas.textWidth(name.substring(0, i), font);
+            const int right = canvas.textWidth(name.substring(i), font);
+            const int difference = abs(left - right);
+            if (difference < smallestDifference) {
+                split = i;
+                smallestDifference = difference;
+            }
+        }
+    }
+    if (split == 0) {
+        drawNameLine(name, {area.x, area.y + (area.h - lineHeight) / 2, area.w, lineHeight}, font);
+        return;
+    }
+
+    String first = name.substring(0, split);
+    String second = name.substring(split);
+    first.trim();
+    second.trim();
+    const int rowGap = 2;
+    const int top = area.y + (area.h - 2*lineHeight - rowGap) / 2;
+    drawNameLine(first, {area.x, top, area.w, lineHeight}, font);
+    drawNameLine(second, {area.x, top + lineHeight + rowGap, area.w, lineHeight}, font);
 }
 
 void deviceTile(const PowerItem& item, UI::Rect rect, bool focused) {
@@ -369,6 +467,54 @@ void deviceTile(const PowerItem& item, UI::Rect rect, bool focused) {
     canvas.drawString(state, badgeX + 9, badgeY + 10, 2);
 }
 
+void settingsCard(int y, int height, const char* title) {
+    canvas.fillRoundRect(5, y, 230, height, 8, CARD);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString(title, 14, y + 8, 2);
+}
+
+void settingsValue(const String& text, int y, bool prominent = false) {
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(prominent ? TFT_WHITE : 0xD69A);
+    const int font = prominent && canvas.textWidth(text, 2) <= 208 ? 2 : 1;
+    canvas.setViewport(14, y, 208, canvas.fontHeight(font));
+    canvas.drawString(text, 0, 0, font);
+    canvas.resetViewport();
+}
+
+void settingsConnection(const char* text, int y, bool connected) {
+    canvas.setTextDatum(TR_DATUM);
+    canvas.setTextColor(connected ? 0x9FF5 : 0xFE36);
+    canvas.drawString(text, 226, y, 1);
+}
+
+void drawSettings() {
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    const bool haConnected = connected && catalogLive;
+    label("Settings", 8, 39, 4, TFT_WHITE);
+
+    settingsCard(70, 66, "Wi-Fi");
+    settingsConnection(demo ? "NOT SET UP" : connected ? "CONNECTED" : "DISCONNECTED", 82, connected);
+    settingsValue(settings.ssid.isEmpty() ? "No Wi-Fi configured" : settings.ssid, 96, true);
+    settingsValue(connected ? "Device IP  " + WiFi.localIP().toString() : "Device IP  --", 120);
+    if (connected) {
+        canvas.setTextDatum(TR_DATUM);
+        canvas.setTextColor(0xD69A);
+        canvas.drawString(String(WiFi.RSSI()) + " dBm", 226, 120, 1);
+    }
+
+    settingsCard(142, 66, "Home Assistant");
+    settingsConnection(demo ? "NOT SET UP" : haConnected ? "CONNECTED" :
+                       !connected ? "WI-FI OFFLINE" : busy ? "CHECKING" : "UNAVAILABLE", 154, haConnected);
+    settingsValue(homeAssistantIp != IPAddress() ? "Server IP  " + homeAssistantIp.toString() : "Server IP  --", 168, true);
+    settingsValue(settings.url.isEmpty() ? "No server configured" : settings.url, 191);
+
+    settingsCard(214, 67, "Device");
+    settingsValue(String("Firmware  ") + firmwareVersion, 240);
+    settingsValue(String("Timezone  ") + clockZone->name, 261);
+}
+
 void draw() {
     xSemaphoreTake(stateLock, portMAX_DELAY);
     dirty = false;
@@ -378,42 +524,52 @@ void draw() {
     const time_t now = time(nullptr);
     char clockText[12] = "--:--";
     char secondsText[4] = "";
-    if (now >= 1700000000) {
-        tm local;
-        localtime_r(&now, &local);
+    char dateText[16] = "";
+    if (now >= firstSynchronizedTime) {
+        tm local{};
+        clockLocalTime(now, *clockZone, local);
         strftime(clockText, sizeof(clockText), "%H:%M", &local);
         strftime(secondsText, sizeof(secondsText), ":%S", &local);
+        strftime(dateText, sizeof(dateText), "%d %b %Y", &local);
     }
     label(clockText, 8, 2, 4, TFT_WHITE);
     label(secondsText, 12 + canvas.textWidth(clockText, 4), 16, 1, MUTED);
-    button(UI::changeView, viewLabels[static_cast<uint8_t>(view)], UI::viewButton, 0x2250);
-    button(UI::refresh, busy ? "WAIT" : "REFRESH", UI::refreshButton, 0x2250, !busy);
+    label(dateText, 108, 7, 2, TFT_WHITE);
 
-    page = UI::clampPage(page, viewItems.size());
-    const int pages = UI::pageCount(viewItems.size());
-    const int visible = UI::visibleCount(viewItems.size(), page);
-    if (pages > 1) {
-        button(UI::previous, "<", UI::previousButton, CARD, page > 0);
-        button(UI::next, ">", UI::nextButton, CARD, page+1 < pages);
-        canvas.setTextDatum(MC_DATUM); canvas.setTextColor(MUTED, BG);
-        canvas.drawString(String(page+1) + "/" + pages, 120, 301, 1);
+    if (view == View::Settings) {
+        drawSettings();
+    } else {
+        page = UI::clampPage(page, viewItems.size());
+        const int pages = UI::pageCount(viewItems.size());
+        const int visible = UI::visibleCount(viewItems.size(), page);
+        if (pages > 1) {
+            button(UI::previous, UI::previousButton, CARD, page > 0);
+            button(UI::next, UI::nextButton, CARD, page+1 < pages);
+            canvas.setTextDatum(MC_DATUM); canvas.setTextColor(MUTED, BG);
+            const String pageText = String(page+1) + "/" + pages;
+            const auto indicator = UI::pageIndicator;
+            canvas.drawString(pageText, indicator.x + indicator.w / 2, indicator.y + indicator.h / 2,
+                              canvas.textWidth(pageText, 2) <= indicator.w ? 2 : 1);
+        }
+        const String headerStatus = demo ? "DEMO - configure via USB" : busy ? "" : notice;
+        if (!headerStatus.isEmpty()) label(shortText(headerStatus, 36), 8, 29, 1, TFT_CYAN);
+        for (int slot = 0; slot < visible; ++slot) {
+            size_t index = page*UI::devicesPerPage + slot;
+            UI::Rect rect = UI::tile(slot, viewItems.size(), page);
+            const bool focused = !touchAvailable &&
+                static_cast<int>(index) == UI::focusedControl(focus, viewItems.size(), page);
+            deviceTile(items[viewItems[index]], rect, focused);
+        }
+        if (viewItems.empty()) {
+            if (busy) label("Loading devices...", 20, 110, 2, MUTED);
+            else if (view == View::Favorites) {
+                label("No favorites yet", 20, 110, 2, MUTED);
+                label("Hold a tile in All or Controls", 20, 140, 2, MUTED);
+            } else label(view == View::Controls ? "No controls found" : "No devices loaded", 20, 110, 2, MUTED);
+        }
     }
-    const String headerStatus = demo ? "DEMO - configure via USB" : busy ? "" : notice;
-    if (!headerStatus.isEmpty()) label(shortText(headerStatus, 36), 8, 29, 1, TFT_CYAN);
-    for (int slot = 0; slot < visible; ++slot) {
-        size_t index = page*UI::devicesPerPage + slot;
-        UI::Rect rect = UI::tile(slot, viewItems.size(), page);
-        const bool focused = !touchAvailable &&
-            static_cast<int>(index) == UI::focusedControl(focus, viewItems.size(), page);
-        deviceTile(items[viewItems[index]], rect, focused);
-    }
-    if (viewItems.empty()) {
-        if (busy) label("Loading devices...", 20, 110, 2, MUTED);
-        else if (view == View::Favorites) {
-            label("No favorites yet", 20, 110, 2, MUTED);
-            label("Hold a tile in All or Controls", 20, 140, 2, MUTED);
-        } else label(view == View::Controls ? "No controls found" : "No devices loaded", 20, 110, 2, MUTED);
-    }
+    button(UI::refresh, UI::refreshButton, 0x2250, !busy);
+    button(UI::changeView, UI::viewButton, 0x2250, true, viewLabels[static_cast<uint8_t>(view)]);
     canvas.pushSprite(0, 0);
     layoutDrawn = true;
     xSemaphoreGive(stateLock);
@@ -428,9 +584,8 @@ void activate(int id, bool hold = false) {
         invalidateLayout();
         return;
     }
-    if (busy) return;
     if (id == UI::changeView) {
-        const auto next = static_cast<uint8_t>((static_cast<uint8_t>(view) + 1) % 3);
+        const auto next = static_cast<uint8_t>((static_cast<uint8_t>(view) + 1) % static_cast<uint8_t>(View::Count));
         Preferences prefs;
         if (!prefs.begin("fnk-ha", false) || !prefs.putUChar("view", next)) {
             notice = "Could not save view"; dirty = true; return;
@@ -442,6 +597,7 @@ void activate(int id, bool hold = false) {
         return;
     }
 
+    if (busy) return;
     Action action{-1, false};
     if (id >= 0 && static_cast<size_t>(id) < viewItems.size()) {
         action.index = viewItems[id];
@@ -492,7 +648,6 @@ void setup() {
     Serial.setRxBufferSize(setupLineLimit + 2);
     Serial.begin(115200);
     stateLock = xSemaphoreCreateMutex(); actions = xQueueCreate(1, sizeof(Action));
-    setenv("TZ", localTimezone, 1); tzset();
     screen.init(); screen.setRotation(0);
     pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
     displayIdle.activity(millis());
