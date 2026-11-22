@@ -1,28 +1,39 @@
 # FNK_HA
 
-FNK_HA is a Home Assistant controller for the **Freenove FNK0104B 2.8-inch ESP32-S3 touch display**. It connects directly to Home Assistant over local Wi-Fi and keeps the adaptive grid from ESP Smart Display.
+FNK_HA is a Home Assistant controller for the **Freenove FNK0104B 2.8-inch ESP32-S3 touch display**. It connects directly to Home Assistant over local Wi-Fi. The adaptive grid displays up to nine entities per page and refreshes automatically every 60 seconds.
 
 [![Firmware CI and release](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml/badge.svg)](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml)
 
-![FNK_HA screenshot captured over USB from the Freenove display while connected to Home Assistant](docs/device-screen.png)
+![Controls view captured from the Freenove display, showing six Home Assistant entities with their names and states](docs/device-screen.png)
 
 ## Install the firmware
 
 These binaries are for the **Freenove FNK0104B 2.8-inch ILI9341 display with a 16 MB ESP32-S3**. Connect it to your computer with a USB data cable and close any open serial monitor.
 
-Download the binaries, checksums, and flashing instructions from [v0.1 on GitHub](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.1). On macOS or Linux, verify the release files in the download directory with `shasum -a 256 -c SHA256SUMS.txt`.
+### Latest firmware from main
 
-| Use | Binary | Flash address |
+Build and upload from a clone of this repository to get the **Controls**, **All**, and **Favorites** views and scrolling names. In an activated Python virtual environment, run:
+
+    python -m pip install -r requirements-dev.txt
+    pio run -t upload --upload-port YOUR_USB_PORT
+
+Alternatively, open a successful [Firmware Actions run on main](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml?query=branch%3Amain), download its **fnk-ha-dev** artifact, and extract the binaries from `dev/`. Follow the flashing instructions below using the `fnk-ha-dev-merged.bin` or `fnk-ha-dev-app.bin` filename.
+
+### Flash a prebuilt binary
+
+The [v0.1 release](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.1) contains the original all-entity grid. The Actions artifact and the release both include flashing instructions and checksums. On macOS or Linux, run `shasum -a 256 -c SHA256SUMS.txt` from the directory containing the binaries.
+
+| Use | Binary suffix | Flash address |
 | --- | --- | --- |
-| First installation | `fnk-ha-v0.1-merged.bin` | `0x0` |
-| Update an existing FNK_HA installation | `fnk-ha-v0.1-app.bin` | `0x10000` |
+| First installation | `-merged.bin` | `0x0` |
+| Update an existing FNK_HA installation | `-app.bin` | `0x10000` |
 
-The merged image replaces the existing firmware and clears saved settings. The app image requires the FNK_HA partition layout and preserves saved configuration. Install esptool and flash the appropriate file:
+The merged image replaces the existing firmware and clears saved settings. The app image requires the FNK_HA partition layout and preserves saved configuration. For example, to flash the merged binary from the latest Actions artifact, run:
 
     python -m pip install esptool==4.9.0
-    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.1-merged.bin
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-dev-merged.bin
 
-For an app-only update, use `write_flash 0x10000 fnk-ha-v0.1-app.bin` in the same command. USB ports typically look like `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
+For an app-only update, use `write_flash 0x10000 fnk-ha-dev-app.bin` in the same command. USB ports typically look like `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
 
 ## Connect to Home Assistant
 
@@ -37,19 +48,26 @@ For an app-only update, use `write_flash 0x10000 fnk-ha-v0.1-app.bin` in the sam
 
 ## Use the display
 
-The view selector and favorites are available in current source builds. The v0.1 release uses the original all-entity grid.
+Tap the view button in the top-right corner to cycle through **Controls**, **All**, and **Favorites**.
 
 | Control | What it does |
 | --- | --- |
 | Entity tile | Toggles an available light, switch, fan, humidifier, or input boolean. Other tiles display their reported states. |
-| **Controls**, **All**, or **Favorites** | Tap the top-right button to cycle through views. **Controls** is the default and shows only the supported on/off entity types. |
+| **Controls** | The default view. Shows lights, switches, fans, humidifiers, and input booleans. |
+| **All** | Shows all entities Home Assistant reports, including sensors. |
+| **Favorites** | Shows the tiles you selected in your saved order. |
 | **<** and **>** | Move between pages. Each page fits up to nine tiles. |
 | **ALL ON** and **ALL OFF** | Send the corresponding command to supported, available entities across every page of the selected view. |
 | **REFRESH** | Reloads the list and reported states immediately. |
 
 **All** shows every entity Home Assistant reports, sorted by friendly name. Names use smaller text on narrow tiles and scroll when they still exceed two lines. A device with a switch and a power sensor appears on two tiles. The display refreshes every 60 seconds, picking up new, renamed, and removed entities.
 
-To customize the order, press and hold a tile for about a second and release in **Controls** or **All** to add or remove it from **Favorites**. A yellow dot marks a favorite. In **Favorites**, press and hold a tile and release to move it to the front. Repeat from the last device you want in the order to the first. The display saves your selected view and favorite order through restarts.
+### Pin and reorder favorites
+
+1. In **Controls** or **All**, hold a tile for about a second, then release to pin it. A yellow dot marks pinned tiles. Repeat the gesture in **Controls** or **All** to remove a pin.
+2. Switch to **Favorites**. Hold and release a tile to move it to the front. To arrange a whole list, move tiles in reverse order, finishing with the tile you want first.
+
+The display saves both the active view and your favorite order across restarts.
 
 After two minutes of inactivity, the display sleeps. A tap or BOOT press wakes it. If touch is unavailable, briefly press BOOT to move focus or hold it for at least 0.8 seconds to activate the focused tile or button. Hold for at least 1.8 seconds for the favorite action. The clock uses network time and defaults to Toronto.
 
@@ -63,11 +81,10 @@ After two minutes of inactivity, the display sleeps. A tap or BOOT press wakes i
 
 ## Development
 
-To build or upload from source, prepare a Python virtual environment, then run:
+To compile without uploading, run the following in an activated Python virtual environment:
 
     python -m pip install -r requirements-dev.txt
     pio run
-    pio run -t upload --upload-port YOUR_USB_PORT
 
 Firmware uses the [Home Assistant REST API](https://developers.home-assistant.io/docs/api/rest/). The board's pin assignments are in [display_setup.h](include/display_setup.h). For USB framebuffer capture, run:
 
