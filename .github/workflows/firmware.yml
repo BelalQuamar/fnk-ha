@@ -34,9 +34,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for test in ui_layout display_idle local_clock; do
-            c++ -std=c++11 -Iinclude "tests/${test}_test.cpp" -o "${RUNNER_TEMP}/${test}_test"
-            "${RUNNER_TEMP}/${test}_test"
+          for source in tests/*_test.cpp; do
+            name="$(basename "$source" .cpp)"
+            c++ -std=c++11 -Iinclude "$source" -o "$RUNNER_TEMP/$name"
+            "$RUNNER_TEMP/$name"
           done
       - name: Check Python syntax
         run: python -m compileall -q tools tests

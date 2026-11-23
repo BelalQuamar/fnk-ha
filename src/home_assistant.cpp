@@ -1,4 +1,5 @@
 #include "home_assistant.h"
+#include "entity_actions.h"
 
 #include <HTTPClient.h>
 #include <WiFiClient.h>
@@ -32,8 +33,11 @@ bool Settings::valid() const {
 }
 
 bool PowerItem::controllable() const {
-    return domain == "light" || domain == "switch" || domain == "fan" ||
-           domain == "input_boolean" || domain == "humidifier";
+    return EntityActions::kind(domain.c_str()) == EntityActions::Kind::Toggle;
+}
+
+bool PowerItem::pressable() const {
+    return EntityActions::kind(domain.c_str()) == EntityActions::Kind::Press;
 }
 
 namespace {
@@ -180,9 +184,10 @@ bool HomeAssistant::discover(std::vector<PowerItem>& items, IPAddress& serverIp)
 }
 
 bool HomeAssistant::command(const PowerItem& item, bool on) {
-    if (!item.controllable()) return false;
+    const char* service = EntityActions::service(EntityActions::kind(item.domain.c_str()), on);
+    if (!service) return false;
     Request request;
-    return request.send(config, "/api/services/" + item.domain + (on ? "/turn_on" : "/turn_off"),
+    return request.send(config, "/api/services/" + item.domain + "/" + service,
                         error, "{\"entity_id\":\"" + item.id + "\"}");
 }
 

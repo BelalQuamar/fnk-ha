@@ -18,6 +18,7 @@ struct PowerItem {
     bool sent = false;
 
     bool controllable() const;
+    bool pressable() const;
 };
 
 class HomeAssistant {

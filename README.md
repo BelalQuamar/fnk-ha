@@ -2,7 +2,7 @@
 
 FNK_HA turns a **Freenove FNK0104B 2.8-inch ESP32-S3 touch display** into a local Home Assistant controller. The grid shows up to six tiles per page, with two-line names and separate status badges. The Settings view shows network and firmware details directly on the display.
 
-[Download v0.3](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.3) · [Set up Home Assistant](#connect-to-home-assistant) · [Use the display](#use-the-display)
+[Download v0.3.1](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.3.1) · [Set up Home Assistant](#connect-to-home-assistant) · [Use the display](#use-the-display)
 
 [![Firmware CI and release](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml/badge.svg)](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml)
 
@@ -12,16 +12,16 @@ FNK_HA turns a **Freenove FNK0104B 2.8-inch ESP32-S3 touch display** into a loca
 
 Both screenshots were captured over USB from the Freenove display. The Settings screenshot uses example network names and addresses.
 
-## Install v0.3
+## Install v0.3.1
 
 The release targets the **FNK0104B with a 240 × 320 ILI9341 display and 16 MB flash**. Connect the display with a USB data cable and close any serial monitor.
 
 | Installation | Download | Flash address |
 | --- | --- | --- |
-| Fresh install | [Merged binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.3/fnk-ha-v0.3-merged.bin) | `0x0` |
-| Update an existing FNK_HA installation | [App-only binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.3/fnk-ha-v0.3-app.bin) | `0x10000` |
+| Fresh install | [Merged binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.3.1/fnk-ha-v0.3.1-merged.bin) | `0x0` |
+| Update an existing FNK_HA installation | [App-only binary](https://github.com/BelalQuamar/fnk-ha/releases/download/v0.3.1/fnk-ha-v0.3.1-app.bin) | `0x10000` |
 
-The merged binary clears saved settings. The app-only binary preserves settings and requires the FNK_HA partition layout. The [release page](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.3) includes `INSTALL.md` and `SHA256SUMS.txt`. To check the downloaded binary, compare its output from `shasum -a 256 <filename>` with the corresponding entry in `SHA256SUMS.txt`.
+The merged binary clears saved settings. The app-only binary preserves settings and requires the FNK_HA partition layout. The [release page](https://github.com/BelalQuamar/fnk-ha/releases/tag/v0.3.1) includes `INSTALL.md` and `SHA256SUMS.txt`. To check the downloaded binary, compare its output from `shasum -a 256 <filename>` with the corresponding entry in `SHA256SUMS.txt`.
 
 Install esptool in a Python virtual environment:
 
@@ -29,11 +29,11 @@ Install esptool in a Python virtual environment:
 
 For a fresh install, run:
 
-    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.3-merged.bin
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x0 fnk-ha-v0.3.1-merged.bin
 
 For an update, run:
 
-    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x10000 fnk-ha-v0.3-app.bin
+    python -m esptool --chip esp32s3 --port YOUR_USB_PORT --baud 460800 write_flash 0x10000 fnk-ha-v0.3.1-app.bin
 
 Replace `YOUR_USB_PORT` with the display's serial port, such as `/dev/cu.usbmodem1101` on macOS, `/dev/ttyACM0` on Linux, or `COM5` on Windows.
 
@@ -60,6 +60,7 @@ Tap the bottom-right view selector to cycle through **Controls**, **All**, **Fav
 | **Settings** | Wi-Fi name, connection status, signal strength, device and server IP addresses, Home Assistant URL, firmware version, and timezone. |
 
 - Tap a supported tile to turn it on or off. Its badge shows the reported state. Long names split across two lines, and each line scrolls if it still exceeds the tile width.
+- In **All** or **Favorites**, tap a **Press** badge to trigger a Home Assistant button, including Wake-on-LAN. Acknowledgment means Home Assistant accepted the press.
 - Tap the larger arrows in the footer to change pages. The arrows and page count appear when the view has more than one page.
 - Tap the circular arrow at the bottom left to refresh or check the connection. The entity list and states also refresh automatically every 60 seconds.
 
@@ -93,7 +94,7 @@ In an activated Python virtual environment, run:
 
 Successful [main-branch Actions runs](https://github.com/BelalQuamar/fnk-ha/actions/workflows/firmware.yml?query=branch%3Amain) also provide a `fnk-ha-dev` artifact with binaries under `dev/`.
 
-Run the host checks for layout, sleep timing, and timezone:
+Run the host checks for layout, sleep timing, timezone, and entity actions:
 
     for test in tests/*_test.cpp; do
       c++ -std=c++11 -Iinclude "$test" -o /tmp/fnk-ha-test && /tmp/fnk-ha-test || exit 1

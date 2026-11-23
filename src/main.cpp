@@ -202,7 +202,7 @@ void provision(const String& line) {
         json["timezone"] = clockZone->name;
         json["channels"] = viewItems.size();
         json["view"] = viewLabels[static_cast<uint8_t>(view)]; json["favorites"] = favorites.size(); json["status"] = notice;
-        json["ui_version"] = 15; json["font2_loaded"] = true;
+        json["ui_version"] = 16; json["font2_loaded"] = true;
         json["firmware_version"] = firmwareVersion;
         const bool connected = WiFi.status() == WL_CONNECTED;
         json["wifi_connected"] = connected;
@@ -307,6 +307,14 @@ void worker(void*) {
         xSemaphoreGive(stateLock);
 
         const bool accepted = ha.command(item, action.on);
+        if (item.pressable()) {
+            xSemaphoreTake(stateLock, portMAX_DELAY);
+            items[index].sent = false;
+            xSemaphoreGive(stateLock);
+            // A stateless press acknowledges the command, with no power state to confirm.
+            status(accepted ? String("Button press accepted") : ha.error, false);
+            continue;
+        }
         bool confirmed = false;
         if (accepted) {
             for (int attempt = 0; attempt < 3; ++attempt) {
@@ -449,6 +457,8 @@ void deviceTile(const PowerItem& item, UI::Rect rect, bool focused) {
     } else if (item.sent || (item.controllable() && !item.known)) {
         state = item.sent ? "Updating" : "Unknown";
         background = 0xFCE7; foreground = TFT_BLACK;
+    } else if (item.pressable()) {
+        state = "Press";
     } else if (item.known) {
         state = item.on ? "On" : "Off";
         background = item.on ? 0x036A : 0x39E9;
@@ -626,9 +636,11 @@ void activate(int id, bool hold = false) {
             }
             return;
         }
-        if ((!catalogLive && !demo) || !item.online || !item.controllable()) return;
-        if (!item.known) action.index = -1;
-        else action.on = !item.on;
+        if ((!catalogLive && !demo) || !item.online) return;
+        if (item.controllable()) {
+            if (!item.known) action.index = -1;
+            else action.on = !item.on;
+        } else if (!item.pressable()) return;
     } else if (id != UI::refresh) return;
 
     if (demo) {
