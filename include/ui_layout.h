@@ -7,9 +7,12 @@ constexpr unsigned long refreshIntervalMs = 60000;
 inline bool discoveryDue(unsigned long now, unsigned long last) {
     return (unsigned long)(now-last) >= refreshIntervalMs;
 }
-inline int pageCount(int count) { return count > 0 ? (count - 1)/devicesPerPage + 1 : 1; }
-inline int clampPage(int page, int count) {
-    return page < 0 ? 0 : page >= pageCount(count) ? pageCount(count)-1 : page;
+inline int pageCount(int count, bool camera = false) {
+    return count > 0 ? (camera ? count : (count - 1)/devicesPerPage + 1) : 1;
+}
+inline int clampPage(int page, int count, bool camera = false) {
+    const int pages = pageCount(count, camera);
+    return page < 0 ? 0 : page >= pages ? pages-1 : page;
 }
 inline int visibleCount(int count, int page = 0) {
     int remaining = count - page*devicesPerPage;
@@ -38,28 +41,28 @@ inline Rect tile(int index, int count, int page = 0) {
     return {margin + (index % columns)*(width+gap), gridTop + (index/columns)*(height+gap),
             wideLastTile ? gridWidth : width, height};
 }
-inline int hit(int x, int y, int count, int page = 0) {
-    page = clampPage(page, count);
+inline int hit(int x, int y, int count, int page = 0, bool camera = false) {
+    page = clampPage(page, count, camera);
     if (viewButton.contains(x, y)) return changeView;
     if (refreshButton.contains(x, y)) return refresh;
-    if (pageCount(count) > 1) {
+    if (pageCount(count, camera) > 1) {
         if (previousButton.contains(x, y)) return previous;
         if (nextButton.contains(x, y)) return next;
     }
-    const int visible = visibleCount(count, page);
+    const int visible = camera ? 0 : visibleCount(count, page);
     for (int i = 0; i < visible; ++i)
         if (tile(i, count, page).contains(x, y)) return page*devicesPerPage+i;
     return -1;
 }
-inline int focusCount(int count, int page) {
-    return visibleCount(count, page) + (pageCount(count) > 1 ? 4 : 2);
+inline int focusCount(int count, int page, bool camera = false) {
+    return (camera ? 0 : visibleCount(count, page)) + (pageCount(count, camera) > 1 ? 4 : 2);
 }
-inline int focusedControl(int focus, int count, int page = 0) {
-    const int visible = visibleCount(count, page);
+inline int focusedControl(int focus, int count, int page = 0, bool camera = false) {
+    const int visible = camera ? 0 : visibleCount(count, page);
     if (focus < visible) return page*devicesPerPage+focus;
     switch (focus-visible) {
         case 0: return refresh;
-        case 1: return pageCount(count) > 1 ? previous : changeView;
+        case 1: return pageCount(count, camera) > 1 ? previous : changeView;
         case 2: return next;
         default: return changeView;
     }

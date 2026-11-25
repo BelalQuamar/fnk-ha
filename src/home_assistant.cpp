@@ -136,6 +136,36 @@ private:
 };
 }
 
+bool HomeAssistant::readCamera(const String& id, CameraImage& image) {
+    Request request;
+    if (!request.send(config, "/api/camera_proxy/" + id + "?width=230&height=218", error))
+        return false;
+
+    const int size = request.http.getSize();
+    if (size < 4 || size > 96 * 1024) {
+        error = "Camera image size unsupported";
+        return false;
+    }
+    CameraImage received;
+    received.bytes.reset(static_cast<uint8_t*>(std::malloc(size)));
+    if (!received.bytes) {
+        error = "Not enough camera memory";
+        return false;
+    }
+    auto* stream = request.http.getStreamPtr();
+    if (!stream || stream->readBytes(received.bytes.get(), size) != static_cast<size_t>(size)) {
+        error = "Incomplete camera image";
+        return false;
+    }
+    if (received.bytes.get()[0] != 0xff || received.bytes.get()[1] != 0xd8) {
+        error = "Camera needs JPEG snapshots";
+        return false;
+    }
+    received.size = size;
+    image = std::move(received);
+    return true;
+}
+
 bool HomeAssistant::readTimezone(String& zone) {
     Request request;
     String requestError;

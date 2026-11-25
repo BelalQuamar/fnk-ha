@@ -64,6 +64,10 @@ Tap the bottom-right view selector to cycle through **Controls**, **All**, **Fav
 - Tap the larger arrows in the footer to change pages. The arrows and page count appear when the view has more than one page.
 - Tap the circular arrow at the bottom left to refresh or check the connection. The entity list and states also refresh automatically every 60 seconds.
 
+### Cameras in current source builds
+
+Cycle the bottom-right view selector to **Cameras**. The bottom arrows page through Home Assistant's camera entities, one per screen. The display updates the selected camera with JPEG snapshots, about once a second when the camera responds quickly. Cameras that only supply another image format need a JPEG-capable camera entity in Home Assistant. Camera requests pause while the screen sleeps.
+
 ### Pin and reorder favorites
 
 1. In **Controls** or **All**, hold a tile for about a second and release to pin it. A yellow dot marks the tile. Repeat the gesture in either view to unpin it.

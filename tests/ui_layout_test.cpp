@@ -43,6 +43,18 @@ int main() {
         assert(UI::hit(235, 313, count) != UI::changeView);
         assert(UI::focusedControl(UI::focusCount(count, 0) - 1, count) == UI::changeView);
     }
+    // Camera pages reserve the image area and expose only footer controls.
+    assert(UI::pageCount(0, true) == 1);
+    assert(UI::pageCount(3, true) == 3);
+    assert(UI::clampPage(3, 3, true) == 2);
+    assert(UI::hit(10, 70, 3, 0, true) == -1);
+    assert(UI::hit(57, 301, 3, 2, true) == UI::previous);
+    assert(UI::hit(140, 301, 3, 2, true) == UI::next);
+    assert(UI::hit(140, 301, 1, 0, true) == -1);
+    assert(UI::focusCount(3, 0, true) == 4);
+    assert(UI::focusedControl(0, 3, 0, true) == UI::refresh);
+    assert(UI::focusedControl(3, 3, 0, true) == UI::changeView);
+
     assert(UI::pageCount(0)==1);
     assert(UI::pageCount(6)==1 && UI::pageCount(7)==2 && UI::pageCount(13)==3);
     assert(UI::visibleCount(7,1)==1);

@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <TJpg_Decoder.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include <Preferences.h>
@@ -21,10 +22,14 @@ QueueHandle_t actions;
 std::vector<PowerItem> items;
 std::vector<size_t> viewItems;
 std::vector<String> favorites;
-enum class View : uint8_t { Controls, All, Favorites, Settings, Count };
+enum class View : uint8_t { Controls, All, Favorites, Settings, Cameras, Count };
 View view = View::Controls;
-const char* viewLabels[] = {"CONTROLS", "ALL", "FAVORITES", "SETTINGS"};
+const char* viewLabels[] = {"CONTROLS", "ALL", "FAVORITES", "SETTINGS", "CAMERAS"};
 unsigned layoutRevision = 0;
+CameraImage cameraImage;
+String cameraImageId, cameraError;
+bool cameraPaused = false, cameraRendered = false;
+constexpr unsigned long cameraIntervalMs = 1200;
 bool scrollingNames = false;
 unsigned long scrollStarted = 0;
 constexpr unsigned long holdMs = 650;
@@ -39,9 +44,18 @@ const uint16_t BG = 0x2108, CARD = 0x4208, MUTED = 0x9CF3;
 DisplayIdle displayIdle;
 constexpr size_t setupLineLimit = 3500;
 void draw();
+bool cameraView() { return view == View::Cameras; }
+
+const PowerItem* selectedCamera() {
+    return cameraView() && page >= 0 && static_cast<size_t>(page) < viewItems.size()
+        ? &items[viewItems[page]] : nullptr;
+}
 
 void sleepDisplay() {
     if (displayIdle.isAsleep()) return;
+    xSemaphoreTake(stateLock, portMAX_DELAY);
+    cameraPaused = true;
+    xSemaphoreGive(stateLock);
     digitalWrite(TFT_BL, !TFT_BACKLIGHT_ON);
     screen.writecommand(TFT_DISPOFF);
     screen.writecommand(ILI9341_SLPIN);
@@ -53,6 +67,9 @@ void sleepDisplay() {
 bool displayActivity() {
     bool waking = displayIdle.activity(millis());
     if (waking) {
+        xSemaphoreTake(stateLock, portMAX_DELAY);
+        cameraPaused = false;
+        xSemaphoreGive(stateLock);
         screen.writecommand(ILI9341_SLPOUT);
         delay(120);
         screen.writecommand(TFT_DISPON);
@@ -90,10 +107,11 @@ void rebuildView() {
         }
     } else if (view != View::Settings) {
         for (size_t i = 0; i < items.size(); ++i)
-            if (view == View::All || items[i].controllable()) viewItems.push_back(i);
+            if (cameraView() ? items[i].domain == "camera" :
+                               view == View::All || items[i].controllable()) viewItems.push_back(i);
     }
-    page = UI::clampPage(page, viewItems.size());
-    if (focus >= UI::focusCount(viewItems.size(), page)) focus = 0;
+    page = UI::clampPage(page, viewItems.size(), cameraView());
+    if (focus >= UI::focusCount(viewItems.size(), page, cameraView())) focus = 0;
 }
 
 bool saveFavorites(const std::vector<String>& next) {
@@ -202,15 +220,18 @@ void provision(const String& line) {
         json["timezone"] = clockZone->name;
         json["channels"] = viewItems.size();
         json["view"] = viewLabels[static_cast<uint8_t>(view)]; json["favorites"] = favorites.size(); json["status"] = notice;
-        json["ui_version"] = 16; json["font2_loaded"] = true;
+        json["ui_version"] = 17; json["font2_loaded"] = true;
         json["firmware_version"] = firmwareVersion;
         const bool connected = WiFi.status() == WL_CONNECTED;
         json["wifi_connected"] = connected;
         json["device_ip"] = connected ? WiFi.localIP().toString() : String();
         json["ha_connected"] = connected && catalogLive;
+        json["camera_frame_bytes"] = cameraImage.size;
+        json["camera_rendered"] = cameraRendered;
+        json["camera_status"] = cameraError;
         json["ha_ip"] = homeAssistantIp != IPAddress() ? homeAssistantIp.toString() : String();
         json["devices_per_page"] = UI::devicesPerPage;
-        json["page"] = page+1; json["pages"] = UI::pageCount(viewItems.size());
+        json["page"] = page+1; json["pages"] = UI::pageCount(viewItems.size(), cameraView());
         json["auto_refresh_seconds"] = UI::refreshIntervalMs / 1000;
         json["discovered_channels"] = discoveredCount;
         json["renders"] = renderCount; json["redraw_pending"] = dirty;
@@ -230,6 +251,34 @@ void provision(const String& line) {
     Serial.println("SETUP_SAVED"); Serial.flush(); delay(250); ESP.restart();
 }
 
+void updateCamera(HomeAssistant& ha, String& lastId, unsigned long& lastRequest) {
+    String id;
+    xSemaphoreTake(stateLock, portMAX_DELAY);
+    const auto* camera = selectedCamera();
+    if (camera && camera->online && catalogLive && !cameraPaused && !busy) id = camera->id;
+    xSemaphoreGive(stateLock);
+    if (id.isEmpty()) {
+        lastId = "";
+        return;
+    }
+    const unsigned long now = millis();
+    if (id == lastId && now - lastRequest < cameraIntervalMs) return;
+    lastId = id;
+    lastRequest = now;
+
+    CameraImage frame;
+    const bool received = ha.readCamera(id, frame);
+    xSemaphoreTake(stateLock, portMAX_DELAY);
+    camera = selectedCamera();
+    if (camera && camera->id == id && !cameraPaused) {
+        if (received || cameraImageId != id) cameraImage = std::move(frame);
+        cameraImageId = id;
+        cameraError = received ? "" : ha.error;
+        dirty = true;
+    }
+    xSemaphoreGive(stateLock);
+}
+
 void worker(void*) {
     HomeAssistant ha(settings);
     WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
@@ -240,7 +289,8 @@ void worker(void*) {
     bool clockStarted = false, wasConnected = false;
     Action action{-1, false};
     bool first = true;
-    unsigned long lastDiscovery = millis();
+    unsigned long lastDiscovery = millis(), lastCameraRequest = 0;
+    String lastCameraId;
     for (;;) {
         const bool connected = WiFi.status() == WL_CONNECTED;
         const bool reconnected = connected && !wasConnected;
@@ -261,7 +311,10 @@ void worker(void*) {
                 (reconnected || UI::discoveryDue(millis(), lastDiscovery));
             if (automatic) busy = true;
             xSemaphoreGive(stateLock);
-            if (!automatic) continue;
+            if (!automatic) {
+                updateCamera(ha, lastCameraId, lastCameraRequest);
+                continue;
+            }
             action = {-1, false};
         }
         first = false;
@@ -296,6 +349,7 @@ void worker(void*) {
                 status(ha.error, false);
             }
             lastDiscovery = millis();
+            lastCameraId = "";
             continue;
         }
         status("Sending command...", true);
@@ -350,7 +404,7 @@ void button(int id, UI::Rect rect, uint16_t color, bool enabled = true, const ch
     const uint16_t fill = enabled ? color : CARD;
     const uint16_t ink = enabled ? TFT_WHITE : MUTED;
     canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 8, fill);
-    if (!touchAvailable && id == UI::focusedControl(focus, viewItems.size(), page))
+    if (!touchAvailable && id == UI::focusedControl(focus, viewItems.size(), page, cameraView()))
         canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 8, TFT_WHITE);
 
     if (id == UI::refresh) {
@@ -525,11 +579,61 @@ void drawSettings() {
     settingsValue(String("Timezone  ") + clockZone->name, 261);
 }
 
+bool cameraBlock(int16_t x, int16_t y, uint16_t width, uint16_t height, uint16_t* pixels) {
+    canvas.pushImage(x, y, width, height, pixels);
+    return true;
+}
+
+void drawCamera() {
+    const auto* camera = selectedCamera();
+    if (!camera) {
+        label(busy ? "Finding cameras..." : "No cameras found", 12, 110, 2, MUTED);
+        return;
+    }
+
+    const int nameFont = canvas.textWidth(camera->name, 2) <= 220 ? 2 : 1;
+    canvas.setViewport(8, 39, 224, canvas.fontHeight(nameFont));
+    label(camera->name, 0, 0, nameFont, TFT_WHITE);
+    canvas.resetViewport();
+
+    constexpr UI::Rect preview{5, 59, 230, 210};
+    canvas.fillRect(preview.x, preview.y, preview.w, preview.h, TFT_BLACK);
+    const char* statusText = "Loading camera...";
+    if (!camera->online || !catalogLive) {
+        statusText = "Camera offline";
+    } else if (cameraImageId == camera->id) {
+        if (cameraImage.size) {
+            uint16_t width = 0, height = 0;
+            if (TJpgDec.getJpgSize(&width, &height, cameraImage.bytes.get(), cameraImage.size) == JDR_OK) {
+                int scale = 1;
+                while (scale < 8 && (width / scale > preview.w || height / scale > preview.h)) scale *= 2;
+                TJpgDec.setJpgScale(scale);
+                canvas.setViewport(preview.x, preview.y, preview.w, preview.h, false);
+                canvas.setSwapBytes(true);
+                const auto result = TJpgDec.drawJpg(preview.x + (preview.w - width / scale) / 2,
+                    preview.y + (preview.h - height / scale) / 2, cameraImage.bytes.get(), cameraImage.size);
+                canvas.setSwapBytes(false);
+                canvas.resetViewport();
+                if (result == JDR_OK) {
+                    cameraRendered = true;
+                    label(cameraError.isEmpty() ? "Live preview" : "Preview stalled - retrying", 8, 273, 1, MUTED);
+                    return;
+                }
+            }
+            statusText = "Unsupported camera JPEG";
+        } else if (!cameraError.isEmpty()) {
+            statusText = cameraError.c_str();
+        }
+    }
+    label(shortText(statusText, 36), 12, 152, 1, MUTED);
+}
+
 void draw() {
     xSemaphoreTake(stateLock, portMAX_DELAY);
     dirty = false;
     ++renderCount;
     scrollingNames = false;
+    cameraRendered = false;
     canvas.fillSprite(BG);
     const time_t now = time(nullptr);
     char clockText[12] = "--:--";
@@ -546,28 +650,29 @@ void draw() {
     label(secondsText, 12 + canvas.textWidth(clockText, 4), 16, 1, MUTED);
     label(dateText, 108, 7, 2, TFT_WHITE);
 
+    const int pages = UI::pageCount(viewItems.size(), cameraView());
+    if (pages > 1) {
+        button(UI::previous, UI::previousButton, CARD, page > 0);
+        button(UI::next, UI::nextButton, CARD, page+1 < pages);
+        canvas.setTextDatum(MC_DATUM); canvas.setTextColor(MUTED, BG);
+        const String pageText = String(page+1) + "/" + pages;
+        const auto indicator = UI::pageIndicator;
+        canvas.drawString(pageText, indicator.x + indicator.w / 2, indicator.y + indicator.h / 2,
+                          canvas.textWidth(pageText, 2) <= indicator.w ? 2 : 1);
+    }
     if (view == View::Settings) {
         drawSettings();
+    } else if (cameraView()) {
+        drawCamera();
     } else {
-        page = UI::clampPage(page, viewItems.size());
-        const int pages = UI::pageCount(viewItems.size());
         const int visible = UI::visibleCount(viewItems.size(), page);
-        if (pages > 1) {
-            button(UI::previous, UI::previousButton, CARD, page > 0);
-            button(UI::next, UI::nextButton, CARD, page+1 < pages);
-            canvas.setTextDatum(MC_DATUM); canvas.setTextColor(MUTED, BG);
-            const String pageText = String(page+1) + "/" + pages;
-            const auto indicator = UI::pageIndicator;
-            canvas.drawString(pageText, indicator.x + indicator.w / 2, indicator.y + indicator.h / 2,
-                              canvas.textWidth(pageText, 2) <= indicator.w ? 2 : 1);
-        }
         const String headerStatus = demo ? "DEMO - configure via USB" : busy ? "" : notice;
         if (!headerStatus.isEmpty()) label(shortText(headerStatus, 36), 8, 29, 1, TFT_CYAN);
         for (int slot = 0; slot < visible; ++slot) {
             size_t index = page*UI::devicesPerPage + slot;
             UI::Rect rect = UI::tile(slot, viewItems.size(), page);
             const bool focused = !touchAvailable &&
-                static_cast<int>(index) == UI::focusedControl(focus, viewItems.size(), page);
+                static_cast<int>(index) == UI::focusedControl(focus, viewItems.size(), page, cameraView());
             deviceTile(items[viewItems[index]], rect, focused);
         }
         if (viewItems.empty()) {
@@ -589,7 +694,14 @@ void draw() {
 void activate(int id, bool hold = false) {
     if (!layoutDrawn || id == -1) return;
     if (id == UI::previous || id == UI::next) {
-        page = UI::clampPage(page + (id == UI::next ? 1 : -1), viewItems.size());
+        const int nextPage = UI::clampPage(page + (id == UI::next ? 1 : -1), viewItems.size(), cameraView());
+        if (nextPage == page) return;
+        page = nextPage;
+        if (cameraView()) {
+            cameraImage = CameraImage{};
+            cameraImageId = "";
+            cameraError = "";
+        }
         focus = 0;
         invalidateLayout();
         return;
@@ -600,6 +712,11 @@ void activate(int id, bool hold = false) {
         if (!prefs.begin("fnk-ha", false) || !prefs.putUChar("view", next)) {
             notice = "Could not save view"; dirty = true; return;
         }
+        if (cameraView()) {
+            cameraImage = CameraImage{};
+            cameraImageId = "";
+            cameraError = "";
+        }
         view = static_cast<View>(next);
         page = focus = 0;
         rebuildView();
@@ -609,7 +726,7 @@ void activate(int id, bool hold = false) {
 
     if (busy) return;
     Action action{-1, false};
-    if (id >= 0 && static_cast<size_t>(id) < viewItems.size()) {
+    if (!cameraView() && id >= 0 && static_cast<size_t>(id) < viewItems.size()) {
         action.index = viewItems[id];
         const PowerItem& item = items[action.index];
         if (hold) {
@@ -664,6 +781,7 @@ void setup() {
     pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
     displayIdle.activity(millis());
     canvas.setColorDepth(8);
+    TJpgDec.setCallback(cameraBlock);
     if (!canvas.createSprite(240, 320)) {
         screen.fillScreen(TFT_BLACK); screen.setTextColor(TFT_WHITE);
         screen.drawString("Display memory error", 10, 100, 2);
@@ -718,7 +836,7 @@ void loop() {
                 const bool waking = displayActivity();
                 const int x = ((xh & 15) << 8) | xl, y = ((yh & 15) << 8) | yl;
                 xSemaphoreTake(stateLock, portMAX_DELAY);
-                const int id = UI::hit(x, y, viewItems.size(), page);
+                const int id = UI::hit(x, y, viewItems.size(), page, cameraView());
                 if (!touched) {
                     touchId = !waking && layoutDrawn && count == 1 ? id : -1;
                     touchStarted = millis();
@@ -747,11 +865,11 @@ void loop() {
         if (buttonWakeOnly) { buttonWakeOnly = false; }
         else if (held >= 800) {
             xSemaphoreTake(stateLock, portMAX_DELAY);
-            int id = UI::focusedControl(focus, viewItems.size(), page);
+            int id = UI::focusedControl(focus, viewItems.size(), page, cameraView());
             activate(id, held >= 1800);
             xSemaphoreGive(stateLock);
         }
-        else if (held >= 40) { xSemaphoreTake(stateLock, portMAX_DELAY); focus = (focus + 1) % UI::focusCount(viewItems.size(),page); dirty = true; xSemaphoreGive(stateLock); }
+        else if (held >= 40) { xSemaphoreTake(stateLock, portMAX_DELAY); focus = (focus + 1) % UI::focusCount(viewItems.size(), page, cameraView()); dirty = true; xSemaphoreGive(stateLock); }
     }
     if (displayIdle.sleepDue(millis())) sleepDisplay();
     static time_t lastSecond = -1;

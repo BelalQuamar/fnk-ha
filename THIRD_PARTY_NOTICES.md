@@ -10,6 +10,7 @@ third-party components.
 | Freenove board configuration | Display/touch pin assignments derived from [Freenove ESP32-S3 Display examples](https://github.com/Freenove/Freenove_ESP32_S3_Display). | Board documentation and downloaded reference resources remain upstream; the `vendor/` checkout is excluded from this repository. |
 | IANA Time Zone Database | Generated UTC offset and abbreviation data in `include/clock_timezones.inc`. Regenerate with `tools/generate_timezones.py`. | Public domain. |
 | ArduinoJson 6.21.5 | Downloaded by PlatformIO; Home Assistant API JSON parsing. | MIT; [upstream license](https://github.com/bblanchon/ArduinoJson/blob/v6.21.5/LICENSE.txt). |
+| TJpg_Decoder 1.1.0 | Downloaded by PlatformIO to decode Home Assistant camera JPEGs. Includes ChaN’s Tiny JPEG Decompressor. | [Upstream license and notices](https://github.com/Bodmer/TJpg_Decoder/blob/master/license.txt). |
 | Arduino-ESP32 / ESP-IDF | Downloaded by PlatformIO; Wi-Fi, HTTP, GPIO, NTP and NVS. | Upstream component-specific licenses apply; these packages are not vendored in this repository. |
 
 Two local changes in the bundled TFT_eSPI distribution fix its
